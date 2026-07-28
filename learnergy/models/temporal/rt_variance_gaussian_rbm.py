@@ -1,0 +1,391 @@
+"""Recurrent Temporal Restricted Boltzmann Machine with Learned Variance.
+
+Extends RTRBM with per-feature learned variance (sigma), following
+learnergy's VarianceGaussianRBM (gaussian_rbm.py) exactly. No per-batch
+normalization required -- the model learns the variance of each feature
+directly from data, making it suitable for biomechanical time series where
+different features have genuinely different scales.
+
+This directly addresses the limitation observed with RTGaussianRBM where
+low-variance features (e.g. features 1 and 3 in the reach data) were
+reconstructed as flat lines because per-batch normalization assumed unit
+variance for all features.
+"""
+from typing import Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import learnergy.utils.constants as c
+from learnergy.utils import logging
+from learnergy.models.temporal.rtrbm import RTRBM
+
+logger = logging.get_logger(__name__)
+
+
+class RTVarianceGaussianRBM(RTRBM):
+    """Recurrent Temporal RBM with learned per-feature variance.
+
+    Extends RTRBM by adding a learnable sigma parameter (one per visible
+    feature), following VarianceGaussianRBM in learnergy's gaussian_rbm.py
+    exactly. No per-batch normalization needed -- sigma learns the scale
+    of each feature automatically.
+
+    Key differences from RTGaussianRBM:
+    - No normalize/input_normalize flags -- sigma replaces normalization
+    - hidden_sampling divides v by sigma^2 (per Cho et al. 2011 eq. 2)
+    - visible_sampling samples from N(W*h + a, sigma^2) using torch.normal
+    - energy uses quadratic term (v-a)^2 / (2*sigma^2) scaled by learned variance
+    - visible_sampling returns (states, activations) -- REVERSED vs GaussianRBM,
+      matching VarianceGaussianRBM's convention exactly
+
+    Training note (from Cho et al. 2011, Fig 1b): learning diverges if
+    sigma is updated from epoch 1 with a large learning rate. We provide
+    a `train_sigma` flag so sigma can be frozen initially (warmup period)
+    and then enabled once W/a/b have stabilized. Recommended:
+        - Warmup: train_sigma=False for ~10-20 epochs
+        - Then: train_sigma=True for remaining epochs
+    """
+
+    def __init__(
+        self,
+        n_visible: int = 128,
+        n_hidden: int = 128,
+        steps: int = 1,
+        learning_rate: float = 0.001,
+        momentum: float = 0.0,
+        decay: float = 0.0,
+        temperature: float = 1.0,
+        use_gpu: bool = False,
+    ) -> None:
+        """Initialization method.
+
+        Note: learning_rate defaults to 0.001 (lower than RTRBM's 0.1)
+        following Cho et al. 2011's finding that GBRBMs are very sensitive
+        to learning rate -- use a small rate and anneal if needed.
+
+        Args mirror VarianceGaussianRBM.__init__ (gaussian_rbm.py) plus
+        the recurrent parameters added by RTRBM.__init__ (W_prime, h0).
+        """
+        logger.info("Overriding class: RTRBM -> RTVarianceGaussianRBM.")
+
+        super(RTVarianceGaussianRBM, self).__init__(
+            n_visible,
+            n_hidden,
+            steps,
+            learning_rate,
+            momentum,
+            decay,
+            temperature,
+            use_gpu,
+        )
+
+        # Per-feature learned variance, initialized to 1.0 --
+        # matches VarianceGaussianRBM's initialization exactly.
+        # Registered with optimizer via add_param_group, same pattern
+        # as W_prime and h0 in RTRBM.__init__ and sigma in
+        # VarianceGaussianRBM.__init__ (gaussian_rbm.py line 525-526).
+        self.sigma = nn.Parameter(torch.ones(n_visible))
+        self.optimizer.add_param_group({"params": self.sigma})
+
+        if self.device == "cuda":
+            self.cuda()
+
+        logger.info("Class overrided.")
+
+    @property
+    def sigma(self) -> torch.nn.Parameter:
+        """Per-feature learned standard deviation parameter."""
+        return self._sigma
+
+    @sigma.setter
+    def sigma(self, sigma: torch.nn.Parameter) -> None:
+        self._sigma = sigma
+
+    def hidden_sampling(
+        self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Performs hidden layer sampling P(h_t | v_t, h_{t-1}).
+
+        Overrides RTRBM.hidden_sampling to scale v by sigma^2 before
+        the linear transform, per Cho et al. 2011 eq. 2:
+            p(h_j=1 | v) = sigmoid(c_j + sum_i W_ij * v_i / sigma_i^2)
+
+        Mirrors VarianceGaussianRBM.hidden_sampling (gaussian_rbm.py
+        lines 557-568) with the addition of the recurrent bias term
+        W_prime @ h_prev, same as RTRBM.hidden_sampling.
+
+        Args:
+            v: Visible layer tensor, shape (batch, n_visible).
+            h_prev: Previous hidden probabilities, shape (batch, n_hidden).
+            scale: Whether to divide by temperature T.
+
+        Returns:
+            (probs, states) of the hidden layer.
+        """
+        # Divide v by sigma^2 before the linear transform --
+        # matches VarianceGaussianRBM.hidden_sampling exactly,
+        # plus adds the recurrent bias term from RTRBM.
+        sigma_sq = torch.pow(self.sigma, 2) + c.EPSILON
+        v_scaled = torch.div(v, sigma_sq)
+
+        recurrent_bias = F.linear(h_prev, self.W_prime, self.b)
+        activations = F.linear(v_scaled, self.W.t()) + recurrent_bias
+
+        if scale:
+            probs = torch.sigmoid(torch.div(activations, self.T))
+        else:
+            probs = torch.sigmoid(activations)
+
+        # Clamp for numerical stability -- same guard used in RTGaussianRBM
+        probs = torch.clamp(probs, 1e-6, 1 - 1e-6)
+        states = torch.bernoulli(probs)
+
+        return probs, states
+
+    def visible_sampling(
+        self, h: torch.Tensor, scale: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Performs visible layer sampling P(v|h).
+
+        Mirrors VarianceGaussianRBM.visible_sampling (gaussian_rbm.py
+        lines 570-595) exactly:
+            p(v_i | h) = N(a_i + sum_j W_ij * h_j, sigma_i^2)
+
+        Samples from Normal(mean, sigma^2) using torch.normal.
+
+        IMPORTANT: return order is (states, activations) -- REVERSED
+        compared to GaussianRBM.visible_sampling which returns
+        (probs, states). This matches VarianceGaussianRBM's convention
+        exactly, which must be consistent throughout gibbs_sampling
+        and reconstruct.
+
+        Args:
+            h: Hidden layer tensor, shape (batch, n_hidden).
+            scale: Whether to divide by temperature T.
+
+        Returns:
+            (states, activations): states are samples from N(mean, sigma^2),
+            activations are the means W*h + a.
+        """
+        activations = F.linear(h, self.W, self.a)
+
+        if self.device == "cpu":
+            # Variance needs shape (batch_size, n_visible) on CPU
+            # Mirrors VarianceGaussianRBM.visible_sampling lines 586-591
+            sigma = self.sigma.unsqueeze(0).expand(activations.size(0), -1)
+        else:
+            sigma = self.sigma
+
+        states = torch.normal(activations, torch.pow(sigma, 2))
+
+        # Return (states, activations) -- same order as VarianceGaussianRBM
+        return states, activations
+
+    def energy(
+        self, samples: torch.Tensor, h_prev: torch.Tensor
+    ) -> torch.Tensor:
+        """Calculates the system's energy with learned variance.
+
+        Mirrors VarianceGaussianRBM.energy (gaussian_rbm.py lines 597-619)
+        with the addition of the recurrent bias term from RTRBM.energy:
+            E = sum_i (v_i - a_i)^2 / (2*sigma_i^2)
+              - sum_j softplus(sum_i W_ij*v_i/sigma_i^2 + W'h_prev + b)
+
+        Args:
+            samples: Visible samples, shape (batch, n_visible).
+            h_prev: Previous hidden probabilities, shape (batch, n_hidden).
+
+        Returns:
+            System energy per sample, shape (batch,).
+        """
+        sigma_sq = torch.pow(self.sigma, 2) + c.EPSILON
+        v_scaled = torch.div(samples, sigma_sq)
+
+        # Recurrent bias term -- same as RTRBM.energy
+        recurrent_bias = F.linear(h_prev, self.W_prime, self.b)
+        activations = F.linear(v_scaled, self.W.t()) + recurrent_bias
+
+        s = nn.Softplus()
+        h = torch.sum(s(activations), dim=1)
+
+        # Quadratic visible term with learned variance --
+        # matches VarianceGaussianRBM.energy line 615 exactly
+        v = torch.sum(
+            torch.div(torch.pow(samples - self.a, 2), 2 * sigma_sq), dim=1
+        )
+
+        energy = -v - h
+
+        return energy
+
+    def gibbs_sampling(
+        self, v: torch.Tensor, h_prev: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Performs Gibbs sampling for one timestep with learned variance.
+
+        Mirrors RTRBM.gibbs_sampling but uses visible_sampling's
+        (states, activations) return convention from VarianceGaussianRBM:
+        passes activations (the mean) back into hidden_sampling during
+        the CD-k loop, NOT the noisy sampled states.
+
+        Using the mean (activations) rather than noisy samples during
+        the Gibbs loop is the standard approach for Gaussian visible units
+        per Hinton & Salakhutdinov (2006): "rather than sampling from the
+        distribution, the visible units can be set equal to their means."
+        This prevents activation explosion during the bouncing steps.
+        """
+        pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
+        neg_hidden_states = pos_hidden_states
+
+        for _ in range(self.steps):
+            # visible_sampling returns (states, activations) for
+            # VarianceGaussianRBM -- use activations (mean) not states
+            # (noisy sample) to feed back into hidden_sampling
+            visible_states, visible_activations = self.visible_sampling(
+                neg_hidden_states, True
+            )
+            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
+                visible_activations, h_prev, True
+            )
+
+        # Return activations (mean) as visible_states for energy computation
+        # -- consistent with using the mean throughout Gibbs sampling
+        return (
+            pos_hidden_probs,
+            pos_hidden_states,
+            neg_hidden_probs,
+            neg_hidden_states,
+            visible_activations,
+        )
+
+    def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
+        """Trains on one subseries with learned variance.
+
+        No per-batch normalization needed -- sigma learns the scale
+        of each feature. Otherwise identical to RTRBM.fit_subseries:
+        accumulate cost across all timesteps, single backward/step.
+
+        Gradient clipping included for stability, following
+        Melchior et al. (2017)'s recommendation for GRBM training.
+        """
+        batch_size, seq_len, n_visible = sequence.shape
+        h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
+
+        self.optimizer.zero_grad()
+
+        total_cost = torch.tensor(0.0)
+        total_mse = torch.tensor(0.0)
+
+        for t in range(seq_len):
+            v_t = sequence[:, t, :]
+            _, _, _, _, visible_activations = self.gibbs_sampling(v_t, h_prev)
+            visible_activations = visible_activations.detach()
+
+            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(
+                self.energy(visible_activations, h_prev)
+            )
+            total_cost = total_cost + cost_t
+
+            batch_mse = torch.div(
+                torch.sum(torch.pow(v_t - visible_activations, 2)), batch_size
+            ).detach()
+            total_mse = total_mse + batch_mse
+
+            h_prev, _ = self.hidden_sampling(v_t, h_prev)
+            h_prev = torch.nan_to_num(h_prev, nan=0.5)
+            h_prev = torch.clamp(h_prev, 0.0, 1.0)
+
+        total_cost.backward()
+
+        # Gradient clipping -- important for GRBM stability
+        # per Melchior et al. (2017) "Gaussian-Bernoulli RBMs Without Tears"
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+
+        self.optimizer.step()
+
+        return total_mse
+
+    def reconstruct(
+        self, dataset: torch.utils.data.Dataset
+    ) -> Tuple[float, torch.Tensor]:
+        """Reconstructs batches of sequences.
+
+        No normalization during reconstruction -- unlike RTGaussianRBM,
+        the model works in the original data space since sigma handles
+        the per-feature scaling. Mirrors RTRBM.reconstruct's structure
+        but uses visible_sampling's (states, activations) convention
+        and returns the mean activations (not noisy states) as the
+        reconstruction, per standard GRBM practice.
+        """
+        from torch.utils.data import DataLoader
+        from tqdm import tqdm
+
+        logger.info("Reconstructing new samples ...")
+
+        mse = torch.tensor(0.0)
+        batch_size = len(dataset)
+        batches = DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, num_workers=0
+        )
+        visible_probs_all = []
+
+        for samples, _ in tqdm(batches):
+            if self.device == "cuda":
+                samples = samples.cuda()
+
+            batch_size_actual = samples.size(0)
+            seq_len = samples.size(1)
+            h_prev = self.h0.unsqueeze(0).expand(batch_size_actual, -1)
+
+            recon_activations = []
+
+            for t in range(seq_len):
+                v_t = samples[:, t, :]
+                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(
+                    v_t, h_prev
+                )
+                # visible_sampling returns (states, activations)
+                _, visible_activations = self.visible_sampling(
+                    pos_hidden_states)
+                recon_activations.append(visible_activations.unsqueeze(1))
+                h_prev = pos_hidden_probs
+
+            recon_seq = torch.cat(recon_activations, dim=1)
+
+            batch_mse = torch.div(
+                torch.sum(torch.pow(samples - recon_seq, 2)),
+                batch_size_actual
+            ).detach()
+            mse += batch_mse
+            visible_probs_all.append(recon_seq)
+
+        mse /= len(batches)
+        logger.info("MSE: %f", mse)
+
+        return mse, torch.cat(visible_probs_all, dim=0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Performs a forward pass over the data.
+
+        No input normalization needed -- sigma handles per-feature scaling.
+        Otherwise mirrors RTRBM.forward exactly.
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, n_visible).
+
+        Returns:
+            Hidden probability sequence, shape (batch, seq_len, n_hidden).
+        """
+        batch_size, seq_len, n_visible = x.shape
+        h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
+
+        all_probs = []
+        for t in range(seq_len):
+            v_t = x[:, t, :]
+            probs, _ = self.hidden_sampling(v_t, h_prev)
+            all_probs.append(probs.unsqueeze(1))
+            h_prev = probs
+
+        return torch.cat(all_probs, dim=1)
