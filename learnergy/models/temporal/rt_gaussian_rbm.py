@@ -3,10 +3,6 @@
 Extends RTRBM (Bernoulli visible) with Gaussian visible units, making it
 suitable for continuous-valued data like biomechanical time series.
 
-The recurrent mechanism (W_prime, h0, hidden_sampling, fit_subseries,
-fit, forward, reconstruct, sample) is inherited unchanged from RTRBM --
-recurrence only touches the hidden layer, not the visible one.
-
 Only four things change vs. Bernoulli RTRBM:
   1. energy()           -- quadratic visible term (v - a)^2 instead of -v*a
   2. visible_sampling() -- linear activations, not Bernoulli samples
@@ -27,17 +23,6 @@ logger = logging.get_logger(__name__)
 
 
 class RTGaussianRBM(RTRBM):
-    """Gaussian-Bernoulli Recurrent Temporal RBM.
-
-    Extends RTRBM by replacing Bernoulli visible units with Gaussian
-    visible units (variance fixed to 1, same as GaussianRBM in
-    learnergy's gaussian_rbm.py). All recurrent machinery inherited
-    from RTRBM unchanged.
-
-    Use this instead of RTRBM for continuous-valued input data
-    (e.g. biomechanical joint angles, velocities, muscle activations).
-    """
-
     def __init__(
         self,
         n_visible: int = 128,
@@ -51,26 +36,7 @@ class RTGaussianRBM(RTRBM):
         normalize: bool = True,
         input_normalize: bool = True,
     ) -> None:
-        """Initialization method.
 
-        Args mirror GaussianRBM.__init__ (gaussian_rbm.py) with the
-        addition of all RTRBM recurrent parameters (W_prime, h0) added
-        by the parent RTRBM.__init__.
-
-        Args:
-            n_visible: Amount of visible units.
-            n_hidden: Amount of hidden units.
-            steps: Number of Gibbs' sampling steps.
-            learning_rate: Learning rate.
-            momentum: Momentum parameter.
-            decay: Weight decay used for penalization.
-            temperature: Temperature factor.
-            use_gpu: Whether GPU should be used or not.
-            normalize: Whether or not to use batch normalization during
-                fit(). Mirrors GaussianRBM's normalize parameter.
-            input_normalize: Whether or not to normalize inputs during
-                forward(). Mirrors GaussianRBM's input_normalize parameter.
-        """
         # Set normalize flags BEFORE calling super().__init__() --
         # matches the order GaussianRBM.__init__ uses in gaussian_rbm.py.
         self._normalize = normalize
@@ -114,19 +80,6 @@ class RTGaussianRBM(RTRBM):
 
         Overrides RTRBM.energy() to use the Gaussian visible energy term:
             E = 0.5 * sum((v - a)^2) - sum(softplus(W^T v + W'h + b))
-
-        The quadratic visible term 0.5*(v-a)^2 replaces the linear -v*a
-        term used in the Bernoulli case, matching GaussianRBM.energy()
-        in gaussian_rbm.py -- the only change for Gaussian visibles.
-        The recurrent bias term (W_prime @ h_prev + b) is inherited from
-        RTRBM.energy().
-
-        Args:
-            samples: Visible samples, shape (batch, n_visible).
-            h_prev: Previous hidden probabilities, shape (batch, n_hidden).
-
-        Returns:
-            System energy per sample, shape (batch,).
         """
         recurrent_bias = F.linear(h_prev, self.W_prime, self.b)
         activations = F.linear(samples, self.W.t()) + recurrent_bias
@@ -146,18 +99,6 @@ class RTGaussianRBM(RTRBM):
         self, v: torch.Tensor, h_prev: torch.Tensor
     ):
         """Overrides RTRBM.gibbs_sampling for Gaussian visible units.
-
-        KEY FIX: For Gaussian visible units, uses the mean field value
-        (linear activation) directly during the Gibbs loop instead of
-        sampling noisy visible states. This is standard practice for
-        Gaussian-Bernoulli RBMs -- see:
-
-        Hinton & Salakhutdinov (2006): "rather than sampling from the
-        distribution, the visible units can be set equal to their means"
-
-        Using sampled values introduces noise that causes activation
-        explosion and NaN during CD-k with continuous visible units,
-        especially when combined with per-batch normalization.
         """
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
@@ -184,13 +125,6 @@ class RTGaussianRBM(RTRBM):
     def hidden_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False
     ):
-        """Overrides RTRBM.hidden_sampling to clamp probabilities and
-        guard against NaN values in h_prev.
-
-        After per-batch normalization, large activations during Gibbs
-        sampling can produce NaN hidden states that propagate through
-        the recurrent chain. Clamping h_prev and probs prevents this.
-        """
         # Guard against NaN in h_prev -- can occur during Gibbs sampling
         # after normalization makes activations large
         h_prev = torch.nan_to_num(h_prev, nan=0.0)
@@ -211,28 +145,7 @@ class RTGaussianRBM(RTRBM):
         return probs, states
 
     def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
-        """Overrides RTRBM.fit_subseries to apply per-batch normalization
-        before training, mirroring GaussianRBM.fit()'s normalize step
-        (gaussian_rbm.py lines 184-188).
 
-        Per-batch normalization (zero mean, unit std per feature) is
-        essential for Gaussian visible units -- without it, the unbounded
-        linear activations cause the model to collapse to outputting a
-        constant value (the data mean) immediately, ignoring the data
-        structure entirely. This is a known issue with Gaussian RBMs
-        documented in Cho, Ilin & Raiko (2011).
-
-        The normalization is applied per-subseries batch, not globally --
-        same as GaussianRBM.fit() does per-batch. This is separate from
-        the external MinMaxScaler preprocessing, which scales across the
-        full dataset.
-
-        Args:
-            sequence: One subseries, shape (batch, seq_len, n_visible).
-
-        Returns:
-            MSE for this subseries.
-        """
         if self.normalize:
             batch_size, seq_len, n_visible = sequence.shape
             flat = sequence.reshape(-1, n_visible)
@@ -294,16 +207,6 @@ class RTGaussianRBM(RTRBM):
         activation W*h + a -- no sigmoid, no Bernoulli sampling. This
         gives continuous-valued outputs instead of binary ones, which is
         exactly what we need for biomechanical data.
-
-        Mirrors GaussianRBM.visible_sampling() in gaussian_rbm.py exactly.
-
-        Args:
-            h: Hidden layer tensor, shape (batch, n_hidden).
-            scale: Whether to divide by temperature T.
-
-        Returns:
-            (probs, states): both are the linear activation for Gaussian
-            units (probs = sigmoid of states, states = linear activation).
         """
         activations = F.linear(h, self.W, self.a)
 
@@ -318,11 +221,6 @@ class RTGaussianRBM(RTRBM):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Overrides RTRBM.forward() to apply input normalization.
-
-        Mirrors GaussianRBM.forward() (gaussian_rbm.py lines 285-288),
-        adapted for temporal (batch, seq_len, n_visible) input shape.
-        Without this, forward() sees un-normalized data but the model
-        was trained on normalized data -- causing poor hidden embeddings.
         """
         if self.input_normalize:
             batch_size, seq_len, n_visible = x.shape
@@ -347,12 +245,6 @@ class RTGaussianRBM(RTRBM):
         self, dataset: torch.utils.data.Dataset
     ) -> Tuple[float, torch.Tensor]:
         """Overrides RTRBM.reconstruct() to normalize during reconstruction.
-
-        Mirrors GaussianRBM.reconstruct() (gaussian_rbm.py lines 249-254).
-        The model was trained on per-batch normalized data -- without
-        applying the same normalization during reconstruction, the model
-        sees a completely different data distribution and reconstructions
-        are meaningless.
         """
         from torch.utils.data import DataLoader
         from tqdm import tqdm

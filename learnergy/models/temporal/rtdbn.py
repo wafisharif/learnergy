@@ -1,15 +1,9 @@
 """Recurrent Temporal Deep Belief Network (RTDBN).
 
-Extends learnergy's DBN (dbn.py) with RTRBMs as the layer type
-instead of plain RBMs, making it suitable for temporal sequence data.
-
 - Each layer is an RTRBM (specifically RTVarianceGaussianRBM by default)
-  rather than a plain RBM -- handles (batch, seq_len, n_visible) input
 - forward() returns temporal embeddings via mean pooling over the time
   axis, collapsing (batch, seq_len, n_hidden) -> (batch, n_hidden)
 - fit() trains each layer on sequences rather than flat vectors
-- Includes a simple IIC-compatible clustering head matching SIT-FUSE's
-  pattern (fully connected layers trained with IIC loss)
 """
 from typing import List, Optional, Tuple
 
@@ -36,16 +30,6 @@ RT_MODELS = {
 
 
 class IICClusteringHead(nn.Module):
-    """Simple IIC-compatible clustering head.
-
-    Matches SIT-FUSE's clustering head pattern: fully connected layers
-    that take the encoder's output and produce soft cluster assignments.
-    Trained using the IIC loss (mutual information between a sample and
-    its perturbed version).
-
-    Per SIT-FUSE paper: perturbations are additions of Gaussian noise
-    to the outputs of RBM-based architectures.
-    """
 
     def __init__(
         self,
@@ -54,13 +38,6 @@ class IICClusteringHead(nn.Module):
         n_hidden: int = 256,
         noise_std: float = 0.1,
     ) -> None:
-        """
-        Args:
-            n_input: Size of the encoder's output (n_hidden of last RTRBM).
-            n_clusters: Number of output clusters.
-            n_hidden: Hidden layer size in the clustering head.
-            noise_std: Std of Gaussian noise used for IIC perturbations.
-        """
         super(IICClusteringHead, self).__init__()
 
         self.noise_std = noise_std
@@ -75,45 +52,14 @@ class IICClusteringHead(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns soft cluster assignments for input embeddings.
-
-        Args:
-            x: Encoder output, shape (batch, n_input).
-
-        Returns:
-            Cluster probabilities, shape (batch, n_clusters).
-        """
         return self.fc(x)
 
     def perturb(self, x: torch.Tensor) -> torch.Tensor:
-        """Adds Gaussian noise to encoder output for IIC perturbation.
-
-        Mirrors SIT-FUSE's perturbation strategy: Gaussian noise added
-        to RBM-based encoder outputs before the clustering head.
-
-        Args:
-            x: Encoder output, shape (batch, n_input).
-
-        Returns:
-            Perturbed encoder output, same shape.
-        """
         return x + torch.randn_like(x) * self.noise_std
 
     @staticmethod
     def iic_loss(p: torch.Tensor, p_perturbed: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
         """Computes the IIC loss (negative mutual information).
-
-        Maximizes mutual information between cluster assignments of a
-        sample and its perturbed version. Per Ji et al. (2019):
-            I(z; z') = sum_{c,c'} P(c,c') * log[ P(c,c') / (P(c)*P(c')) ]
-
-        Args:
-            p: Cluster probabilities, shape (batch, n_clusters).
-            p_perturbed: Cluster probs for perturbed version, same shape.
-            eps: Small value for numerical stability.
-
-        Returns:
-            Scalar IIC loss (negative mutual information, to minimize).
         """
         # Joint distribution P(c, c') -- outer product averaged over batch
         # Shape: (n_clusters, n_clusters)
@@ -133,14 +79,6 @@ class IICClusteringHead(nn.Module):
 
 
 class RTDBN(Model):
-    """Recurrent Temporal Deep Belief Network.
-
-    Wraps one or more RTRBMs into a deep stack, mirroring learnergy's
-    DBN (dbn.py) structure but adapted for temporal sequences.
-
-    Per Nick's direction: start with one layer. Adding more layers
-    later is just changing n_hidden from (64,) to (64, 32) etc.
-    """
 
     def __init__(
         self,
@@ -157,27 +95,6 @@ class RTDBN(Model):
         cluster_hidden: int = 256,
         noise_std: float = 0.1,
     ) -> None:
-        """Initialization method.
-
-        Mirrors DBN.__init__ (dbn.py) exactly in parameter structure,
-        adapted for RTRBM layer types and the addition of the IIC
-        clustering head.
-
-        Args:
-            model: Tuple of RTRBM type strings, one per layer.
-                   Currently supports: "variance_gaussian".
-            n_visible: Number of visible units (input features).
-            n_hidden: Tuple of hidden unit counts, one per layer.
-            steps: CD-k steps per layer.
-            learning_rate: Learning rate per layer.
-            momentum: Momentum per layer.
-            decay: Weight decay per layer.
-            temperature: Temperature per layer.
-            use_gpu: Whether to use GPU.
-            n_clusters: Number of output clusters for IIC head.
-            cluster_hidden: Hidden size of IIC clustering head.
-            noise_std: Std of Gaussian perturbation noise for IIC.
-        """
         logger.info("Overriding class: Model -> RTDBN.")
 
         super(RTDBN, self).__init__(use_gpu=use_gpu)
@@ -262,20 +179,6 @@ class RTDBN(Model):
         self._n_layers = n_layers
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encodes a sequence through all RTRBM layers and returns a
-        temporal embedding via mean pooling over the time axis.
-
-        This is the key method connecting RTDBN to the IIC clustering
-        head: the (batch, seq_len, n_hidden) output of forward() is
-        collapsed to (batch, n_hidden) by averaging over timesteps,
-        giving one embedding per sequence that can be clustered.
-
-        Args:
-            x: Input sequences, shape (batch, seq_len, n_visible).
-
-        Returns:
-            Temporal embeddings, shape (batch, n_hidden[-1]).
-        """
         # Pass through each RTRBM layer sequentially --
         # mirrors DBN.forward()'s layer-by-layer pattern (dbn.py line 404)
         # but adapted for temporal (batch, seq_len, n_features) shape
@@ -290,16 +193,6 @@ class RTDBN(Model):
         return embedding
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Full forward pass: encode sequences and produce cluster assignments.
-
-        Args:
-            x: Input sequences, shape (batch, seq_len, n_visible).
-
-        Returns:
-            (embeddings, cluster_probs):
-            - embeddings: shape (batch, n_hidden[-1]) -- temporal embeddings
-            - cluster_probs: shape (batch, n_clusters) -- soft cluster assignments
-        """
         embeddings = self.encode(x)
         cluster_probs = self.clustering_head(embeddings)
         return embeddings, cluster_probs
@@ -311,23 +204,6 @@ class RTDBN(Model):
         epochs: Tuple[int, ...] = (30,),
         warmup_epochs: Tuple[int, ...] = (15,),
     ) -> List[torch.Tensor]:
-        """Trains each RTRBM layer sequentially, mirroring DBN.fit().
-
-        Layer 0 trains on raw sequences. Each subsequent layer trains
-        on the temporal output of the previous layer -- same greedy
-        layer-wise pre-training as DBN (dbn.py lines 305-341), adapted
-        for sequence data.
-
-        Args:
-            dataset: SFTemporalDataset where each sample is (seq_len, n_visible).
-            batch_size: Batch size.
-            epochs: Training epochs per layer.
-            warmup_epochs: Sigma warmup epochs per layer (only used by
-                RTVarianceGaussianRBM -- number of epochs to freeze sigma).
-
-        Returns:
-            List of final MSE per layer.
-        """
         if len(epochs) != self.n_layers:
             raise e.SizeError(
                 f"`epochs` should have size equal to {self.n_layers}"
@@ -362,7 +238,6 @@ class RTDBN(Model):
                 # be hit with the default single-layer config.
                 raise NotImplementedError(
                     "Multi-layer RTDBN training not yet implemented. "
-                    "Per Nick's direction, start with one layer "
                     "(n_hidden=(64,)) -- this error should not appear "
                     "in the single-layer configuration."
                 )
@@ -378,29 +253,9 @@ class RTDBN(Model):
     ) -> List[float]:
         """Trains the IIC clustering head on top of the frozen RTRBM encoder.
 
-        Mirrors SIT-FUSE's pattern: encoder pre-trained first, then frozen,
+        Mirrors SIT-FUSE: encoder pre-trained first, then frozen,
         then clustering head trained with IIC loss. Perturbations are Gaussian
-        noise added to encoder outputs, per the SIT-FUSE paper.
-
-        KEY FIX vs. original implementation:
-        - Embeddings are computed FRESH per batch inside the training loop,
-          not pre-cached with torch.no_grad(). Pre-caching caused the IIC
-          loss to stay at zero because all batches saw identical deterministic
-          embeddings -- the noise was the only source of variation, making
-          the joint distribution P(c,c') degenerate.
-        - Noise std is scaled RELATIVE to the embedding magnitude (10% of
-          per-batch std) rather than a fixed absolute value. The encoder
-          outputs are small in magnitude; fixed noise_std=0.1 was larger
-          than the entire embedding range, destroying the MI signal.
-
-        Args:
-            dataset: SFTemporalDataset (same as used for RTRBM training).
-            batch_size: Batch size.
-            epochs: Number of IIC training epochs.
-            learning_rate: Learning rate for clustering head optimizer.
-
-        Returns:
-            List of IIC loss values per epoch.
+        noise added to encoder outputs.
         """
         # Freeze the RTRBM encoder -- only train the clustering head
         for model in self.models:
@@ -485,21 +340,7 @@ class RTDBN(Model):
         IIC requires training the encoder jointly with the clustering head
         to learn discriminative features -- training a clustering head on
         frozen RTRBM embeddings alone leads to collapse when the embeddings
-        lack sufficient discriminability (common at early training stages).
-
-        K-means directly on the frozen RTRBM embeddings is a reliable
-        starting point for qualitative analysis, consistent with SIT-FUSE's
-        earlier clustering approach (BIRCH/k-means before transitioning to
-        IIC per the paper). This produces meaningful clusters from whatever
-        structure the RTRBM has learned, without requiring joint training.
-
-        Args:
-            dataset: SFTemporalDataset to cluster.
-            batch_size: Batch size for embedding extraction.
-            n_init: Number of k-means initializations (higher = more stable).
-
-        Returns:
-            Cluster assignment tensor, shape (n_samples,).
+        lack sufficient discriminability.
         """
         from sklearn.cluster import KMeans
 
@@ -521,18 +362,6 @@ class RTDBN(Model):
         self, dataset: torch.utils.data.Dataset, batch_size: int = 32
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns cluster assignments and embeddings for a full dataset.
-
-        This is the main analysis output -- used to visualize what the
-        model has learned about the structure of the biomechanical data.
-
-        Args:
-            dataset: SFTemporalDataset to cluster.
-            batch_size: Batch size.
-
-        Returns:
-            (embeddings, cluster_assignments):
-            - embeddings: shape (n_samples, n_hidden[-1])
-            - cluster_assignments: shape (n_samples,) -- hard cluster labels
         """
         batches = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=0
