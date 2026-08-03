@@ -38,9 +38,6 @@ class RTRBM(RBM):
         # Learnable initial hidden state, used at t=0 (no h_{-1} exists).
         self.h0 = nn.Parameter(torch.zeros(n_hidden))
 
-        # Mirrors VarianceGaussianRBM's pattern (gaussian_rbm.py) of
-        # registering new nn.Parameters with the optimizer AFTER
-        # super().__init__() has already built it.
         self.optimizer.add_param_group({"params": [self.W_prime, self.h0]})
 
         if self.device == "cuda":
@@ -97,12 +94,6 @@ class RTRBM(RBM):
         self, v: torch.Tensor, h_prev: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Performs the whole Gibbs sampling procedure FOR ONE TIMESTEP.
-
-        Overrides RBM.gibbs_sampling (learnergy's rbm.py) to thread h_prev
-        through every hidden_sampling call. h_prev stays FIXED
-        across all CD-k steps within this call -- it is the recurrent
-        context for THIS timestep only, not something that changes during
-        the k Gibbs-sampling bounces.
         """
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
@@ -141,15 +132,9 @@ class RTRBM(RBM):
         return mse
 
     def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
-        """Trains on ONE subseries (a short chunk of consecutive
-        timesteps), using independent CD-k per timestep for the cost
+        """Trains on ONE subseries, using independent CD-k per timestep for the cost
         computation, but accumulating cost ACROSS THE WHOLE SUBSERIES
         before a SINGLE backward() + optimizer step.
-
-        BPTT: h_prev is carried forward
-        WITHOUT detaching between timesteps, so gradients from later
-        timesteps' cost can flow backward through the h_prev chain into
-        earlier timesteps' contribution to W_prime and h0.
         """
         batch_size, seq_len, n_visible = sequence.shape
 
@@ -176,13 +161,6 @@ class RTRBM(RBM):
             ).detach()
             total_mse = total_mse + batch_mse
 
-            # CRITICAL: do NOT detach here. h_prev for the NEXT timestep
-            # must stay attached to the computation graph, or gradients
-            # from this timestep onward could never flow back to W_prime/
-            # h0's contribution at EARLIER timesteps -- which would
-            # silently turn this into "independent CD-k with no real BPTT
-            # at all," defeating the entire point of this method vs.
-            # cd_step().
             h_prev, _ = self.hidden_sampling(v_t, h_prev)
 
         total_cost.backward()

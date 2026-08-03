@@ -22,8 +22,6 @@ from learnergy.models.temporal.rt_variance_gaussian_rbm import RTVarianceGaussia
 logger = logging.get_logger(__name__)
 
 
-# Registry of supported RTRBM types -- mirrors DBN's MODELS dict (dbn.py)
-# so additional RTRBM variants can be added later without changing RTDBN.
 RT_MODELS = {
     "variance_gaussian": RTVarianceGaussianRBM,
 }
@@ -42,8 +40,6 @@ class IICClusteringHead(nn.Module):
 
         self.noise_std = noise_std
 
-        # Two fully connected layers -- same pattern as SIT-FUSE's
-        # clustering head architecture from the paper
         self.fc = nn.Sequential(
             nn.Linear(n_input, n_hidden),
             nn.ReLU(),
@@ -61,8 +57,6 @@ class IICClusteringHead(nn.Module):
     def iic_loss(p: torch.Tensor, p_perturbed: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
         """Computes the IIC loss (negative mutual information).
         """
-        # Joint distribution P(c, c') -- outer product averaged over batch
-        # Shape: (n_clusters, n_clusters)
         p_joint = torch.einsum("bi,bj->ij", p, p_perturbed) / p.shape[0]
         p_joint = (p_joint + p_joint.t()) / 2  # symmetrize
         p_joint = torch.clamp(p_joint, min=eps)
@@ -71,7 +65,7 @@ class IICClusteringHead(nn.Module):
         p_i = p_joint.sum(dim=1, keepdim=True)  # (n_clusters, 1)
         p_j = p_joint.sum(dim=0, keepdim=True)  # (1, n_clusters)
 
-        # Mutual information (negative, since we minimize loss)
+        # Mutual information
         mi = (p_joint * (torch.log(p_joint) -
               torch.log(p_i) - torch.log(p_j))).sum()
 
@@ -135,8 +129,6 @@ class RTDBN(Model):
             )
             self.models.append(m)
 
-        # IIC clustering head -- takes the temporal embedding from the
-        # last RTRBM layer and produces cluster assignments
         self.clustering_head = IICClusteringHead(
             n_input=self.n_hidden[-1],
             n_clusters=n_clusters,
@@ -179,15 +171,10 @@ class RTDBN(Model):
         self._n_layers = n_layers
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        # Pass through each RTRBM layer sequentially --
-        # mirrors DBN.forward()'s layer-by-layer pattern (dbn.py line 404)
-        # but adapted for temporal (batch, seq_len, n_features) shape
         h = x
         for model in self.models:
             h = model.forward(h)  # (batch, seq_len, n_hidden_i)
 
-        # Mean pool over time axis: (batch, seq_len, n_hidden) -> (batch, n_hidden)
-        # Standard approach for collapsing sequence embeddings to fixed-size vectors
         embedding = h.mean(dim=1)
 
         return embedding
@@ -229,13 +216,6 @@ class RTDBN(Model):
                 mse_per_layer.append(model.history["mse"][-1])
 
             else:
-                # Subsequent layers train on hidden output of previous layers.
-                # We need to transform the dataset by passing it through
-                # all previous layers first -- same principle as DBN.fit()
-                # lines 325-326 which pass samples through previous models.
-                # TODO: implement multi-layer training when n_layers > 1.
-                # For now, Nick said start with one layer -- this path won't
-                # be hit with the default single-layer config.
                 raise NotImplementedError(
                     "Multi-layer RTDBN training not yet implemented. "
                     "(n_hidden=(64,)) -- this error should not appear "
@@ -257,7 +237,6 @@ class RTDBN(Model):
         then clustering head trained with IIC loss. Perturbations are Gaussian
         noise added to encoder outputs.
         """
-        # Freeze the RTRBM encoder -- only train the clustering head
         for model in self.models:
             for param in model.parameters():
                 param.requires_grad_(False)
@@ -280,27 +259,15 @@ class RTDBN(Model):
                 if self.device == "cuda":
                     samples = samples.cuda()
 
-                # Compute embeddings FRESH per batch -- NOT cached.
-                # Encoder is frozen so no grad needed through it,
-                # but embeddings must be computed here (not pre-cached)
-                # so each batch draws from the actual data distribution.
                 with torch.no_grad():
                     embeddings = self.encode(samples)
 
-                # Scale noise relative to embedding magnitude --
-                # fixed noise_std can be too large or too small depending
-                # on the encoder's output scale. Using 10% of per-batch
-                # std keeps perturbations meaningful without destroying signal.
                 emb_std = embeddings.std().item()
                 adaptive_noise = max(emb_std * 0.1, 1e-4)
 
-                # Perturb embeddings (adaptive Gaussian noise)
                 perturbed = embeddings + \
                     torch.randn_like(embeddings) * adaptive_noise
 
-                # Forward pass through clustering head
-                # embeddings.detach() so gradients only flow through
-                # the clustering head, not back to the frozen encoder
                 p = self.clustering_head(embeddings.detach())
                 p_perturbed = self.clustering_head(perturbed.detach())
 
@@ -335,12 +302,6 @@ class RTDBN(Model):
         n_init: int = 10,
     ) -> torch.Tensor:
         """Clusters temporal embeddings using k-means.
-
-        Practical alternative to IIC for initial end-to-end analysis.
-        IIC requires training the encoder jointly with the clustering head
-        to learn discriminative features -- training a clustering head on
-        frozen RTRBM embeddings alone leads to collapse when the embeddings
-        lack sufficient discriminability.
         """
         from sklearn.cluster import KMeans
 

@@ -37,8 +37,6 @@ class RTGaussianRBM(RTRBM):
         input_normalize: bool = True,
     ) -> None:
 
-        # Set normalize flags BEFORE calling super().__init__() --
-        # matches the order GaussianRBM.__init__ uses in gaussian_rbm.py.
         self._normalize = normalize
         self._input_normalize = input_normalize
 
@@ -87,8 +85,6 @@ class RTGaussianRBM(RTRBM):
         s = nn.Softplus()
         h = torch.sum(s(activations), dim=1)
 
-        # Gaussian visible term -- replaces Bernoulli's -v*a
-        # Mirrors GaussianRBM.energy() in gaussian_rbm.py exactly
         v = 0.5 * torch.sum((samples - self.a) ** 2, dim=1)
 
         energy = v - h
@@ -156,10 +152,6 @@ class RTGaussianRBM(RTRBM):
             sequence = flat.reshape(batch_size, seq_len, n_visible)
 
         # Run the full subseries training loop with gradient clipping.
-        # We can't call super().fit_subseries() and add clipping after
-        # since the optimizer.step() is inside that method. Instead we
-        # replicate the loop here with clipping added -- matches the
-        # same pattern but adds stability for Gaussian training.
         batch_size, seq_len, n_visible = sequence.shape
         h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
         self.optimizer.zero_grad()
@@ -201,12 +193,6 @@ class RTGaussianRBM(RTRBM):
         self, h: torch.Tensor, scale: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Performs visible layer sampling for Gaussian units, P(v|h).
-
-        Overrides RBM.visible_sampling (inherited via RTRBM). For
-        Gaussian visible units, the mean of P(v|h) is simply the linear
-        activation W*h + a -- no sigmoid, no Bernoulli sampling. This
-        gives continuous-valued outputs instead of binary ones, which is
-        exactly what we need for biomechanical data.
         """
         activations = F.linear(h, self.W, self.a)
 
