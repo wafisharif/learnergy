@@ -3,7 +3,11 @@
 - Each layer is an RTRBM (specifically RTVarianceGaussianRBM by default)
 - forward() returns temporal embeddings via mean pooling over the time
   axis, collapsing (batch, seq_len, n_hidden) -> (batch, n_hidden)
-- fit() trains each layer on sequences rather than flat vectors
+- fit() trains each layer on sequences
+
+Clustering head and training wrapper live in SIT-FUSE:
+  sit_fuse.models.encoders.rtdbn_pl (encoder wrapper)
+  sit_fuse.models.deep_cluster.rtdbn_dc (clustering head + IIC loss)
 """
 from typing import List, Optional, Tuple
 
@@ -27,51 +31,6 @@ RT_MODELS = {
 }
 
 
-class IICClusteringHead(nn.Module):
-
-    def __init__(
-        self,
-        n_input: int,
-        n_clusters: int,
-        n_hidden: int = 256,
-        noise_std: float = 0.1,
-    ) -> None:
-        super(IICClusteringHead, self).__init__()
-
-        self.noise_std = noise_std
-
-        self.fc = nn.Sequential(
-            nn.Linear(n_input, n_hidden),
-            nn.ReLU(),
-            nn.Linear(n_hidden, n_clusters),
-            nn.Softmax(dim=1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
-
-    def perturb(self, x: torch.Tensor) -> torch.Tensor:
-        return x + torch.randn_like(x) * self.noise_std
-
-    @staticmethod
-    def iic_loss(p: torch.Tensor, p_perturbed: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        """Computes the IIC loss (negative mutual information).
-        """
-        p_joint = torch.einsum("bi,bj->ij", p, p_perturbed) / p.shape[0]
-        p_joint = (p_joint + p_joint.t()) / 2  # symmetrize
-        p_joint = torch.clamp(p_joint, min=eps)
-
-        # Marginal distributions
-        p_i = p_joint.sum(dim=1, keepdim=True)  # (n_clusters, 1)
-        p_j = p_joint.sum(dim=0, keepdim=True)  # (1, n_clusters)
-
-        # Mutual information
-        mi = (p_joint * (torch.log(p_joint) -
-              torch.log(p_i) - torch.log(p_j))).sum()
-
-        return -mi
-
-
 class RTDBN(Model):
 
     def __init__(
@@ -85,9 +44,6 @@ class RTDBN(Model):
         decay: Tuple[float, ...] = (0.0,),
         temperature: Tuple[float, ...] = (1.0,),
         use_gpu: bool = False,
-        n_clusters: int = 10,
-        cluster_hidden: int = 256,
-        noise_std: float = 0.1,
     ) -> None:
         logger.info("Overriding class: Model -> RTDBN.")
 
@@ -106,7 +62,6 @@ class RTDBN(Model):
         if not isinstance(model, tuple):
             model = (model,)
 
-        # Build RTRBM layers -- mirrors DBN's nn.ModuleList pattern
         self.models = nn.ModuleList([])
         for i in range(self.n_layers):
             n_input = self.n_visible if i == 0 else self.n_hidden[i - 1]
@@ -128,13 +83,6 @@ class RTDBN(Model):
                 use_gpu=use_gpu,
             )
             self.models.append(m)
-
-        self.clustering_head = IICClusteringHead(
-            n_input=self.n_hidden[-1],
-            n_clusters=n_clusters,
-            n_hidden=cluster_hidden,
-            noise_std=noise_std,
-        )
 
         if self.device == "cuda":
             self.cuda()
@@ -171,18 +119,32 @@ class RTDBN(Model):
         self._n_layers = n_layers
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Encodes sequences through all RTRBM layers and returns
+        temporal embeddings via mean pooling over the time axis.
+
+        Args:
+            x: Input sequences, shape (batch, seq_len, n_visible).
+
+        Returns:
+            Temporal embeddings, shape (batch, n_hidden[-1]).
+        """
         h = x
         for model in self.models:
             h = model.forward(h)  # (batch, seq_len, n_hidden_i)
 
-        embedding = h.mean(dim=1)
+        # Mean pool over time: (batch, seq_len, n_hidden) -> (batch, n_hidden)
+        return h.mean(dim=1)
 
-        return embedding
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Full forward pass returning temporal embeddings.
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        embeddings = self.encode(x)
-        cluster_probs = self.clustering_head(embeddings)
-        return embeddings, cluster_probs
+        Args:
+            x: Input sequences, shape (batch, seq_len, n_visible).
+
+        Returns:
+            Temporal embeddings, shape (batch, n_hidden[-1]).
+        """
+        return self.encode(x)
 
     def fit(
         self,
@@ -191,6 +153,17 @@ class RTDBN(Model):
         epochs: Tuple[int, ...] = (30,),
         warmup_epochs: Tuple[int, ...] = (15,),
     ) -> List[torch.Tensor]:
+        """Trains each RTRBM layer sequentially.
+
+        Args:
+            dataset: Dataset where each sample is (seq_len, n_visible).
+            batch_size: Batch size.
+            epochs: Training epochs per layer.
+            warmup_epochs: Sigma warmup epochs per layer.
+
+        Returns:
+            List of final MSE per layer.
+        """
         if len(epochs) != self.n_layers:
             raise e.SizeError(
                 f"`epochs` should have size equal to {self.n_layers}"
@@ -202,7 +175,6 @@ class RTDBN(Model):
             logger.info("Fitting RTDBN layer %d/%d ...", i + 1, self.n_layers)
 
             if i == 0:
-                # First layer trains on raw sequences
                 warmup = warmup_epochs[i] if i < len(warmup_epochs) else 0
                 full = epochs[i] - warmup
 
@@ -218,131 +190,7 @@ class RTDBN(Model):
             else:
                 raise NotImplementedError(
                     "Multi-layer RTDBN training not yet implemented. "
-                    "(n_hidden=(64,)) -- this error should not appear "
-                    "in the single-layer configuration."
+                    "Use n_hidden=(64,) for the single-layer configuration."
                 )
 
         return mse_per_layer
-
-    def fit_clustering_head(
-        self,
-        dataset: torch.utils.data.Dataset,
-        batch_size: int = 32,
-        epochs: int = 20,
-        learning_rate: float = 0.001,
-    ) -> List[float]:
-        """Trains the IIC clustering head on top of the frozen RTRBM encoder.
-
-        Mirrors SIT-FUSE: encoder pre-trained first, then frozen,
-        then clustering head trained with IIC loss. Perturbations are Gaussian
-        noise added to encoder outputs.
-        """
-        for model in self.models:
-            for param in model.parameters():
-                param.requires_grad_(False)
-
-        optimizer = torch.optim.Adam(
-            self.clustering_head.parameters(), lr=learning_rate
-        )
-
-        batches = DataLoader(
-            dataset, batch_size=batch_size, shuffle=True, num_workers=0
-        )
-
-        loss_history = []
-
-        for epoch in range(epochs):
-            epoch_loss = 0.0
-            n_batches = 0
-
-            for samples, _ in tqdm(batches, desc=f"IIC epoch {epoch+1}/{epochs}"):
-                if self.device == "cuda":
-                    samples = samples.cuda()
-
-                with torch.no_grad():
-                    embeddings = self.encode(samples)
-
-                emb_std = embeddings.std().item()
-                adaptive_noise = max(emb_std * 0.1, 1e-4)
-
-                perturbed = embeddings + \
-                    torch.randn_like(embeddings) * adaptive_noise
-
-                p = self.clustering_head(embeddings.detach())
-                p_perturbed = self.clustering_head(perturbed.detach())
-
-                # IIC loss
-                loss = IICClusteringHead.iic_loss(p, p_perturbed)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                epoch_loss += loss.item()
-                n_batches += 1
-
-            avg_loss = epoch_loss / n_batches
-            loss_history.append(avg_loss)
-            self.dump(iic_loss=avg_loss)
-
-            logger.info("IIC Epoch %d/%d | Loss: %.4f",
-                        epoch + 1, epochs, avg_loss)
-
-        # Unfreeze encoder after clustering head training
-        for model in self.models:
-            for param in model.parameters():
-                param.requires_grad_(True)
-
-        return loss_history
-
-    def fit_clustering_kmeans(
-        self,
-        dataset: torch.utils.data.Dataset,
-        batch_size: int = 32,
-        n_init: int = 10,
-    ) -> torch.Tensor:
-        """Clusters temporal embeddings using k-means.
-        """
-        from sklearn.cluster import KMeans
-
-        # Extract all embeddings
-        embeddings, _ = self.get_cluster_assignments(dataset, batch_size)
-        emb_np = embeddings.numpy()
-
-        # Fit k-means
-        km = KMeans(
-            n_clusters=self.clustering_head.fc[-2].out_features,
-            n_init=n_init,
-            random_state=42,
-        )
-        assignments = km.fit_predict(emb_np)
-
-        return torch.from_numpy(assignments)
-
-    def get_cluster_assignments(
-        self, dataset: torch.utils.data.Dataset, batch_size: int = 32
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns cluster assignments and embeddings for a full dataset.
-        """
-        batches = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=0
-        )
-
-        all_embeddings = []
-        all_assignments = []
-
-        with torch.no_grad():
-            for samples, _ in tqdm(batches):
-                if self.device == "cuda":
-                    samples = samples.cuda()
-
-                embeddings, cluster_probs = self.forward(samples)
-                assignments = torch.argmax(cluster_probs, dim=1)
-
-                all_embeddings.append(embeddings)
-                all_assignments.append(assignments)
-
-        return (
-            torch.cat(all_embeddings, dim=0),
-            torch.cat(all_assignments, dim=0),
-        )
