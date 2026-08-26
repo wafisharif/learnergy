@@ -1,15 +1,4 @@
-"""Gaussian-Bernoulli Recurrent Temporal Restricted Boltzmann Machine.
-
-Extends RTRBM (Bernoulli visible) with Gaussian visible units, making it
-suitable for continuous-valued data like biomechanical time series.
-
-Only four things change vs. Bernoulli RTRBM:
-  1. energy()           -- quadratic visible term (v - a)^2 instead of -v*a
-  2. visible_sampling() -- linear activations, not Bernoulli samples
-  3. normalize/input_normalize -- per-batch normalization flags
-  4. fit_subseries()    -- applies per-batch normalization before training,
-                          mirroring GaussianRBM.fit()'s normalize step
-"""
+"""Gaussian-Bernoulli Recurrent Temporal RBM (continuous visible units)."""
 from typing import Tuple
 
 import torch
@@ -74,11 +63,7 @@ class RTGaussianRBM(RTRBM):
         self._input_normalize = input_normalize
 
     def energy(self, samples: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
-        """Calculates the system's energy for Gaussian visible units.
-
-        Overrides RTRBM.energy() to use the Gaussian visible energy term:
-            E = 0.5 * sum((v - a)^2) - sum(softplus(W^T v + W'h + b))
-        """
+        """Gaussian visible energy: 0.5*sum((v-a)^2) - sum(softplus(W^Tv + W'h + b))."""
         recurrent_bias = F.linear(h_prev, self.W_prime, self.b)
         activations = F.linear(samples, self.W.t()) + recurrent_bias
 
@@ -94,14 +79,11 @@ class RTGaussianRBM(RTRBM):
     def gibbs_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor
     ):
-        """Overrides RTRBM.gibbs_sampling for Gaussian visible units.
-        """
+        """Gibbs sampling for Gaussian visible units."""
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
 
         for _ in range(self.steps):
-            # Use visible_probs (mean field) not visible_states (samples)
-            # for Gaussian visible units -- prevents activation explosion
             visible_probs, visible_states = self.visible_sampling(
                 neg_hidden_states, True
             )
@@ -121,8 +103,6 @@ class RTGaussianRBM(RTRBM):
     def hidden_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False
     ):
-        # Guard against NaN in h_prev -- can occur during Gibbs sampling
-        # after normalization makes activations large
         h_prev = torch.nan_to_num(h_prev, nan=0.0)
         h_prev = torch.clamp(h_prev, 0.0, 1.0)
 
@@ -134,7 +114,6 @@ class RTGaussianRBM(RTRBM):
         else:
             probs = torch.sigmoid(activations)
 
-        # Clamp to avoid numerical issues with torch.bernoulli
         probs = torch.clamp(probs, 1e-6, 1 - 1e-6)
         states = torch.bernoulli(probs)
 
@@ -151,7 +130,6 @@ class RTGaussianRBM(RTRBM):
             ).detach()
             sequence = flat.reshape(batch_size, seq_len, n_visible)
 
-        # Run the full subseries training loop with gradient clipping.
         batch_size, seq_len, n_visible = sequence.shape
         h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
         self.optimizer.zero_grad()
@@ -175,14 +153,11 @@ class RTGaussianRBM(RTRBM):
             total_mse = total_mse + batch_mse
 
             h_prev, _ = self.hidden_sampling(v_t, h_prev)
-            # Guard against NaN propagation through the recurrent chain
             h_prev = torch.nan_to_num(h_prev, nan=0.5)
             h_prev = torch.clamp(h_prev, 0.0, 1.0)
 
         total_cost.backward()
 
-        # Gradient clipping -- prevents weight explosion when training
-        # with per-batch normalized data, which can produce large gradients.
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
         self.optimizer.step()
@@ -192,8 +167,7 @@ class RTGaussianRBM(RTRBM):
     def visible_sampling(
         self, h: torch.Tensor, scale: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Performs visible layer sampling for Gaussian units, P(v|h).
-        """
+        """Visible layer sampling for Gaussian units, P(v|h)."""
         activations = F.linear(h, self.W, self.a)
 
         if scale:
@@ -206,8 +180,7 @@ class RTGaussianRBM(RTRBM):
         return probs, states
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Overrides RTRBM.forward() to apply input normalization.
-        """
+        """Applies input normalization, then runs RTRBM.forward()."""
         if self.input_normalize:
             batch_size, seq_len, n_visible = x.shape
             flat = x.reshape(-1, n_visible)
@@ -230,8 +203,7 @@ class RTGaussianRBM(RTRBM):
     def reconstruct(
         self, dataset: torch.utils.data.Dataset
     ) -> Tuple[float, torch.Tensor]:
-        """Overrides RTRBM.reconstruct() to normalize during reconstruction.
-        """
+        """Reconstructs a dataset, normalizing per batch first."""
         from torch.utils.data import DataLoader
         from tqdm import tqdm
 

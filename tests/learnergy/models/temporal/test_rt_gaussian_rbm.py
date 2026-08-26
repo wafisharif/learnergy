@@ -38,12 +38,10 @@ def test_rt_gaussian_rbm_hidden_sampling():
 
 
 def test_rt_gaussian_rbm_visible_sampling_continuous():
-    # Gaussian visible sampling must return continuous values, not binary
     model = rt_gaussian_rbm.RTGaussianRBM()
     h = torch.ones(1, 128)
     probs, states = model.visible_sampling(h)
     assert probs.size(1) == 128
-    # Continuous outputs should not all be 0 or 1
     assert not torch.all((probs == 0) | (probs == 1))
 
 

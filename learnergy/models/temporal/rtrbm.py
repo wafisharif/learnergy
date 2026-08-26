@@ -93,8 +93,7 @@ class RTRBM(RBM):
     def gibbs_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Performs the whole Gibbs sampling procedure FOR ONE TIMESTEP.
-        """
+        """Runs one timestep of Gibbs sampling."""
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
 
@@ -132,10 +131,7 @@ class RTRBM(RBM):
         return mse
 
     def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
-        """Trains on ONE subseries, using independent CD-k per timestep for the cost
-        computation, but accumulating cost ACROSS THE WHOLE SUBSERIES
-        before a SINGLE backward() + optimizer step.
-        """
+        """Trains on one subseries via BPTT (single backward pass across timesteps)."""
         batch_size, seq_len, n_visible = sequence.shape
 
         h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
@@ -191,8 +187,7 @@ class RTRBM(RBM):
             mse = torch.tensor(0.0)
 
             for samples, _ in tqdm(batches):
-                # samples shape: (batch, seq_len, n_visible)
-                # No reshape needed -- fit_subseries expects this shape.
+                # samples: (batch, seq_len, n_visible)
                 if self.device == "cuda":
                     samples = samples.cuda()
 

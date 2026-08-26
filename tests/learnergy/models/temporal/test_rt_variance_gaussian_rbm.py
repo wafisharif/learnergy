@@ -50,11 +50,9 @@ def test_rt_variance_gaussian_rbm_hidden_sampling():
 def test_rt_variance_gaussian_rbm_visible_sampling_continuous():
     model = rt_variance_gaussian_rbm.RTVarianceGaussianRBM()
     h = torch.ones(1, 128)
-    # visible_sampling returns (states, activations)
     states, activations = model.visible_sampling(h)
     assert states.size(1) == 128
     assert activations.size(1) == 128
-    # Continuous outputs should not all be 0 or 1
     assert not torch.all((states == 0) | (states == 1))
 
 
@@ -68,7 +66,6 @@ def test_rt_variance_gaussian_rbm_energy():
 
 
 def test_rt_variance_gaussian_rbm_energy_uses_sigma():
-    # Energy should differ from plain RTRBM because sigma scales the terms
     from learnergy.models.temporal import rtrbm
     model = rt_variance_gaussian_rbm.RTVarianceGaussianRBM()
     plain = rtrbm.RTRBM()

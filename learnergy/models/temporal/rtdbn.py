@@ -1,14 +1,4 @@
-"""Recurrent Temporal Deep Belief Network (RTDBN).
-
-- Each layer is an RTRBM (specifically RTVarianceGaussianRBM by default)
-- forward() returns temporal embeddings via mean pooling over the time
-  axis, collapsing (batch, seq_len, n_hidden) -> (batch, n_hidden)
-- fit() trains each layer on sequences
-
-Clustering head and training wrapper live in SIT-FUSE:
-  sit_fuse.models.encoders.rtdbn_pl (encoder wrapper)
-  sit_fuse.models.deep_cluster.rtdbn_dc (clustering head + IIC loss)
-"""
+"""Recurrent Temporal Deep Belief Network: stacked RTRBM layers with mean-pooled temporal embeddings."""
 from typing import List, Optional, Tuple
 
 import torch
@@ -119,31 +109,15 @@ class RTDBN(Model):
         self._n_layers = n_layers
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encodes sequences through all RTRBM layers and returns
-        temporal embeddings via mean pooling over the time axis.
-
-        Args:
-            x: Input sequences, shape (batch, seq_len, n_visible).
-
-        Returns:
-            Temporal embeddings, shape (batch, n_hidden[-1]).
-        """
+        """Encodes sequences through all RTRBM layers, mean-pooled over time."""
         h = x
         for model in self.models:
             h = model.forward(h)  # (batch, seq_len, n_hidden_i)
 
-        # Mean pool over time: (batch, seq_len, n_hidden) -> (batch, n_hidden)
         return h.mean(dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Full forward pass returning temporal embeddings.
-
-        Args:
-            x: Input sequences, shape (batch, seq_len, n_visible).
-
-        Returns:
-            Temporal embeddings, shape (batch, n_hidden[-1]).
-        """
+        """Full forward pass returning temporal embeddings."""
         return self.encode(x)
 
     def fit(
@@ -153,17 +127,7 @@ class RTDBN(Model):
         epochs: Tuple[int, ...] = (30,),
         warmup_epochs: Tuple[int, ...] = (15,),
     ) -> List[torch.Tensor]:
-        """Trains each RTRBM layer sequentially.
-
-        Args:
-            dataset: Dataset where each sample is (seq_len, n_visible).
-            batch_size: Batch size.
-            epochs: Training epochs per layer.
-            warmup_epochs: Sigma warmup epochs per layer.
-
-        Returns:
-            List of final MSE per layer.
-        """
+        """Trains each RTRBM layer sequentially."""
         if len(epochs) != self.n_layers:
             raise e.SizeError(
                 f"`epochs` should have size equal to {self.n_layers}"

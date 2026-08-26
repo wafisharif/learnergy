@@ -64,7 +64,6 @@ def test_rtdbn_forward_shape():
 
 
 def test_rtdbn_encode_collapses_time():
-    # encode must collapse (batch, seq_len, n_hidden) -> (batch, n_hidden)
     model = rtdbn.RTDBN()
     x = torch.ones(4, 10, 78)
     emb = model.encode(x)
@@ -74,7 +73,6 @@ def test_rtdbn_encode_collapses_time():
 
 
 def test_rtdbn_multilayer():
-    # Two-layer RTDBN should work with matching n_hidden sizes
     model = rtdbn.RTDBN(
         model=("variance_gaussian", "variance_gaussian"),
         n_visible=78,

@@ -1,8 +1,4 @@
-"""Recurrent Temporal Restricted Boltzmann Machine with Learned Variance.
-
-Extends RTRBM with per-feature learned variance (sigma), following
-learnergy's VarianceGaussianRBM (gaussian_rbm.py) exactly.
-"""
+"""Recurrent Temporal RBM with learned per-feature variance (sigma)."""
 from typing import Tuple
 
 import torch
@@ -17,13 +13,6 @@ logger = logging.get_logger(__name__)
 
 
 class RTVarianceGaussianRBM(RTRBM):
-    """Recurrent Temporal RBM with learned per-feature variance.
-
-    Extends RTRBM by adding a learnable sigma parameter (one per visible
-    feature), following VarianceGaussianRBM in learnergy's gaussian_rbm.py
-    exactly.
-    """
-
     def __init__(
         self,
         n_visible: int = 128,
@@ -35,8 +24,6 @@ class RTVarianceGaussianRBM(RTRBM):
         temperature: float = 1.0,
         use_gpu: bool = False,
     ) -> None:
-        """Initialization method.
-        """
         logger.info("Overriding class: RTRBM -> RTVarianceGaussianRBM.")
 
         super(RTVarianceGaussianRBM, self).__init__(
@@ -70,9 +57,6 @@ class RTVarianceGaussianRBM(RTRBM):
     def hidden_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Divide v by sigma^2 before the linear transform --
-        # matches VarianceGaussianRBM.hidden_sampling exactly,
-        # plus adds the recurrent bias term from RTRBM.
         sigma_sq = torch.pow(self.sigma, 2) + c.EPSILON
         v_scaled = torch.div(v, sigma_sq)
 
@@ -126,8 +110,7 @@ class RTVarianceGaussianRBM(RTRBM):
     def gibbs_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Performs Gibbs sampling for one timestep with learned variance.
-        """
+        """Gibbs sampling for one timestep with learned variance."""
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
 
@@ -148,8 +131,7 @@ class RTVarianceGaussianRBM(RTRBM):
         )
 
     def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
-        """Trains on one subseries with learned variance.
-        """
+        """Trains on one subseries with learned variance."""
         batch_size, seq_len, n_visible = sequence.shape
         h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
 
@@ -179,7 +161,6 @@ class RTVarianceGaussianRBM(RTRBM):
 
         total_cost.backward()
 
-        # Gradient clipping -- important for GRBM stability
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
         self.optimizer.step()
@@ -193,8 +174,6 @@ class RTVarianceGaussianRBM(RTRBM):
     def reconstruct(
         self, dataset: torch.utils.data.Dataset
     ) -> Tuple[float, torch.Tensor]:
-        """Reconstructs batches of sequences.
-        """
         from torch.utils.data import DataLoader
         from tqdm import tqdm
 
@@ -242,8 +221,6 @@ class RTVarianceGaussianRBM(RTRBM):
         return mse, torch.cat(visible_probs_all, dim=0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Performs a forward pass over the data.
-        """
         batch_size, seq_len, n_visible = x.shape
         h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
 
