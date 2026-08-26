@@ -184,6 +184,10 @@ class RTVarianceGaussianRBM(RTRBM):
 
         self.optimizer.step()
 
+        # Clamp sigma to prevent gradient-driven collapse toward 0.
+        with torch.no_grad():
+            self.sigma.data.clamp_(min=0.1, max=10.0)
+
         return total_mse
 
     def reconstruct(
