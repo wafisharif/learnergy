@@ -79,7 +79,7 @@ class RTGaussianRBM(RTRBM):
     def gibbs_sampling(
         self, v: torch.Tensor, h_prev: torch.Tensor
     ):
-        """Gibbs sampling for Gaussian visible units."""
+        """One Gibbs step; uses raw visible_states (not sigmoid) as the CD negative particle."""
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
 
@@ -89,7 +89,7 @@ class RTGaussianRBM(RTRBM):
             )
 
             neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
-                visible_probs, h_prev, True
+                visible_states, h_prev, True
             )
 
         return (
@@ -97,7 +97,7 @@ class RTGaussianRBM(RTRBM):
             pos_hidden_states,
             neg_hidden_probs,
             neg_hidden_states,
-            visible_probs,
+            visible_states,
         )
 
     def hidden_sampling(
@@ -260,3 +260,30 @@ class RTGaussianRBM(RTRBM):
         mse /= len(batches)
         logger.info("MSE: %f", mse)
         return mse, torch.cat(visible_probs_all, dim=0)
+
+    def sample(
+        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
+    ) -> torch.Tensor:
+        """Generates sequences; adds Gaussian noise to the mean since visible_sampling() doesn't."""
+        with torch.no_grad():
+            h_prev = self.h0.unsqueeze(0).expand(n_samples, -1)
+
+            all_visible = []
+
+            for t in range(n_steps):
+                h = torch.bernoulli(
+                    torch.full(
+                        (n_samples, self.n_hidden), 0.5, device=h_prev.device
+                    )
+                )
+                for _ in range(gibbs_steps):
+                    _, mean = self.visible_sampling(h)
+                    v = mean + torch.randn_like(mean)
+                    _, h = self.hidden_sampling(v, h_prev)
+                v_t = v
+
+                all_visible.append(v_t.unsqueeze(1))
+
+                h_prev, _ = self.hidden_sampling(v_t, h_prev)
+
+            return torch.cat(all_visible, dim=1)

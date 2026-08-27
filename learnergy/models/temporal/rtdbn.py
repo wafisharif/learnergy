@@ -108,6 +108,16 @@ class RTDBN(Model):
             raise e.ValueError("`n_layers` should be > 0")
         self._n_layers = n_layers
 
+    def sample(
+        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
+    ) -> torch.Tensor:
+        """Delegates to the single trained RTRBM layer; multi-layer sampling isn't implemented."""
+        if self.n_layers != 1:
+            raise NotImplementedError("Multi-layer RTDBN sampling not implemented.")
+        return self.models[0].sample(
+            n_samples=n_samples, n_steps=n_steps, gibbs_steps=gibbs_steps
+        )
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encodes sequences through all RTRBM layers, mean-pooled over time."""
         h = x

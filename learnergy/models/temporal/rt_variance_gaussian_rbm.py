@@ -232,3 +232,29 @@ class RTVarianceGaussianRBM(RTRBM):
             h_prev = probs
 
         return torch.cat(all_probs, dim=1)
+
+    def sample(
+        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
+    ) -> torch.Tensor:
+        """Generates sequences using the noisy visible draw (this class's tuple order is state-first)."""
+        with torch.no_grad():
+            h_prev = self.h0.unsqueeze(0).expand(n_samples, -1)
+
+            all_visible = []
+
+            for t in range(n_steps):
+                h = torch.bernoulli(
+                    torch.full(
+                        (n_samples, self.n_hidden), 0.5, device=h_prev.device
+                    )
+                )
+                for _ in range(gibbs_steps):
+                    v, _ = self.visible_sampling(h)
+                    _, h = self.hidden_sampling(v, h_prev)
+                v_t = v
+
+                all_visible.append(v_t.unsqueeze(1))
+
+                h_prev, _ = self.hidden_sampling(v_t, h_prev)
+
+            return torch.cat(all_visible, dim=1)
