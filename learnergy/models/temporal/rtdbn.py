@@ -111,12 +111,34 @@ class RTDBN(Model):
     def sample(
         self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
     ) -> torch.Tensor:
-        """Delegates to the single trained RTRBM layer; multi-layer sampling isn't implemented."""
-        if self.n_layers != 1:
-            raise NotImplementedError("Multi-layer RTDBN sampling not implemented.")
-        return self.models[0].sample(
-            n_samples=n_samples, n_steps=n_steps, gibbs_steps=gibbs_steps
-        )
+        """Generates sequences via Gibbs sampling at the top layer, then a
+        single top-down ancestral pass through the frozen lower layers
+        (standard DBN generation, per-timestep since visible_sampling
+        carries no recurrent state). Reduces to the old single-layer
+        delegation when n_layers == 1.
+        """
+        with torch.no_grad():
+            current = self.models[-1].sample(
+                n_samples=n_samples, n_steps=n_steps, gibbs_steps=gibbs_steps
+            )
+
+            for i in range(self.n_layers - 2, -1, -1):
+                current = self._decode_sequence(self.models[i], current)
+
+        return current
+
+    def _decode_sequence(
+        self, model: torch.nn.Module, hidden_seq: torch.Tensor
+    ) -> torch.Tensor:
+        """Single ancestral pass: applies a frozen layer's visible_sampling
+        per timestep to map its hidden-space sequence down to its visible space.
+        """
+        outputs = []
+        for t in range(hidden_seq.shape[1]):
+            states, _ = model.visible_sampling(hidden_seq[:, t, :])
+            outputs.append(states.unsqueeze(1))
+
+        return torch.cat(outputs, dim=1)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encodes sequences through all RTRBM layers, mean-pooled over time."""
