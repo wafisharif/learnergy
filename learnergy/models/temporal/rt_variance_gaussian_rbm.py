@@ -179,7 +179,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         logger.info("Reconstructing new samples ...")
 
-        mse = torch.tensor(0.0)
+        mse = torch.tensor(0.0, device=self.device)
         batch_size = len(dataset)
         batches = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=0

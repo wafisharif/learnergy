@@ -111,8 +111,8 @@ def test_rtdbn_sample_delegates():
     print("RTDBN: sample() delegates correctly to single RTRBM layer: PASS")
 
 
-def test_rtdbn_multilayer_sample_raises():
-    """RTDBN.sample() should raise NotImplementedError for n_layers != 1."""
+def test_rtdbn_multilayer_sample_works():
+    """RTDBN.sample() generates via top-layer Gibbs + top-down ancestral pass for n_layers > 1."""
     from learnergy.models.temporal.rtdbn import RTDBN
     model = RTDBN(
         model=("variance_gaussian", "variance_gaussian"),
@@ -124,13 +124,10 @@ def test_rtdbn_multilayer_sample_raises():
         decay=(0.0, 0.0),
         temperature=(1.0, 1.0),
     )
-    raised = False
-    try:
-        model.sample(n_samples=2, n_steps=3)
-    except NotImplementedError:
-        raised = True
-    assert raised, "RTDBN.sample() should raise NotImplementedError for multi-layer stacks"
-    print("RTDBN: multi-layer sample() correctly raises NotImplementedError: PASS")
+    s = model.sample(n_samples=2, n_steps=3, gibbs_steps=10)
+    assert s.shape == (2, 3, 6)
+    assert torch.isfinite(s).all()
+    print("RTDBN: multi-layer sample() generates correctly-shaped, finite output: PASS")
 
 
 def test_trained_model_samples_resemble_training_structure():
@@ -198,7 +195,7 @@ if __name__ == "__main__":
     test_rtgaussian_sample_is_not_degenerate_constant()
     test_gibbs_steps_actually_matters()
     test_rtdbn_sample_delegates()
-    test_rtdbn_multilayer_sample_raises()
+    test_rtdbn_multilayer_sample_works()
     test_trained_model_samples_resemble_training_structure()
     test_gaussian_gibbs_sampling_bugfix_visible_states_not_probs()
     print("\nAll fork comprehensive sample() tests passed.")

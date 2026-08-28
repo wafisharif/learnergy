@@ -203,18 +203,24 @@ class RTGaussianRBM(RTRBM):
     def reconstruct(
         self, dataset: torch.utils.data.Dataset
     ) -> Tuple[float, torch.Tensor]:
-        """Reconstructs a dataset, normalizing per batch first."""
+        """Reconstructs a dataset, normalizing per batch first.
+
+        Returns the raw linear activation (recon_states_seq), not the
+        sigmoid-squashed visible_prob -- same bug class as the
+        gibbs_sampling fix: sigmoid has no meaning for a continuous
+        Gaussian visible unit.
+        """
         from torch.utils.data import DataLoader
         from tqdm import tqdm
 
         logger.info("Reconstructing new samples ...")
 
-        mse = torch.tensor(0.0)
+        mse = torch.tensor(0.0, device=self.device)
         batch_size = len(dataset)
         batches = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=0
         )
-        visible_probs_all = []
+        visible_states_all = []
 
         for samples, _ in tqdm(batches):
             if self.device == "cuda":
@@ -255,11 +261,11 @@ class RTGaussianRBM(RTRBM):
                 batch_size_actual
             ).detach()
             mse += batch_mse
-            visible_probs_all.append(recon_probs_seq)
+            visible_states_all.append(recon_states_seq)
 
         mse /= len(batches)
         logger.info("MSE: %f", mse)
-        return mse, torch.cat(visible_probs_all, dim=0)
+        return mse, torch.cat(visible_states_all, dim=0)
 
     def sample(
         self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100

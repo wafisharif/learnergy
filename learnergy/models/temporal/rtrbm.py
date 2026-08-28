@@ -178,13 +178,13 @@ class RTRBM(RBM):
             dataset, batch_size=batch_size, shuffle=True, num_workers=0
         )
 
-        mse = torch.tensor(0.0)
+        mse = torch.tensor(0.0, device=self.device)
 
         for epoch in range(epochs):
             logger.info("Epoch %d/%d", epoch + 1, epochs)
 
             start = time.time()
-            mse = torch.tensor(0.0)
+            mse = torch.tensor(0.0, device=self.device)
 
             for samples, _ in tqdm(batches):
                 # samples: (batch, seq_len, n_visible)
