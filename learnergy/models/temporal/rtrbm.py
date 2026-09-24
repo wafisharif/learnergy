@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import learnergy.utils.constants as c
-import learnergy.utils.exception as e
 from learnergy.models.bernoulli import RBM
 from learnergy.utils import logging
 
@@ -28,8 +26,14 @@ class RTRBM(RBM):
         logger.info("Overriding class: RBM -> RTRBM.")
 
         super(RTRBM, self).__init__(
-            n_visible, n_hidden, steps, learning_rate, momentum,
-            decay, temperature, use_gpu,
+            n_visible,
+            n_hidden,
+            steps,
+            learning_rate,
+            momentum,
+            decay,
+            temperature,
+            use_gpu,
         )
 
         # Recurrent hidden-to-hidden weights: W' in the paper.
@@ -99,9 +103,7 @@ class RTRBM(RBM):
 
         for _ in range(self.steps):
             _, visible_states = self.visible_sampling(neg_hidden_states, True)
-            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
-                visible_states, h_prev, True
-            )
+            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(visible_states, h_prev, True)
 
         return (
             pos_hidden_probs,
@@ -115,18 +117,14 @@ class RTRBM(RBM):
         _, _, _, _, visible_states = self.gibbs_sampling(v, h_prev)
         visible_states = visible_states.detach()
 
-        cost = torch.mean(self.energy(v, h_prev)) - torch.mean(
-            self.energy(visible_states, h_prev)
-        )
+        cost = torch.mean(self.energy(v, h_prev)) - torch.mean(self.energy(visible_states, h_prev))
 
         self.optimizer.zero_grad()
         cost.backward()
         self.optimizer.step()
 
         batch_size = v.size(0)
-        mse = torch.div(
-            torch.sum(torch.pow(v - visible_states, 2)), batch_size
-        ).detach()
+        mse = torch.div(torch.sum(torch.pow(v - visible_states, 2)), batch_size).detach()
 
         return mse
 
@@ -147,14 +145,10 @@ class RTRBM(RBM):
             _, _, _, _, visible_states = self.gibbs_sampling(v_t, h_prev)
             visible_states = visible_states.detach()
 
-            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(
-                self.energy(visible_states, h_prev)
-            )
+            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(self.energy(visible_states, h_prev))
             total_cost = total_cost + cost_t
 
-            batch_mse = torch.div(
-                torch.sum(torch.pow(v_t - visible_states, 2)), batch_size
-            ).detach()
+            batch_mse = torch.div(torch.sum(torch.pow(v_t - visible_states, 2)), batch_size).detach()
             total_mse = total_mse + batch_mse
 
             h_prev, _ = self.hidden_sampling(v_t, h_prev)
@@ -171,12 +165,11 @@ class RTRBM(RBM):
         epochs: int = 10,
     ) -> torch.Tensor:
         import time
+
         from torch.utils.data import DataLoader
         from tqdm import tqdm
 
-        batches = DataLoader(
-            dataset, batch_size=batch_size, shuffle=True, num_workers=0
-        )
+        batches = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
         mse = torch.tensor(0.0, device=self.device)
 
@@ -204,9 +197,7 @@ class RTRBM(RBM):
 
         return mse
 
-    def sample(
-        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
-    ) -> torch.Tensor:
+    def sample(self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100) -> torch.Tensor:
         """Generates sequences via per-timestep Gibbs burn-in (Algorithm 3, Sutskever et al. 2008)."""
         with torch.no_grad():
             h_prev = self.h0.unsqueeze(0).expand(n_samples, -1)
@@ -214,11 +205,7 @@ class RTRBM(RBM):
             all_visible = []
 
             for t in range(n_steps):
-                h = torch.bernoulli(
-                    torch.full(
-                        (n_samples, self.n_hidden), 0.5, device=h_prev.device
-                    )
-                )
+                h = torch.bernoulli(torch.full((n_samples, self.n_hidden), 0.5, device=h_prev.device))
                 for _ in range(gibbs_steps):
                     _, v = self.visible_sampling(h)
                     _, h = self.hidden_sampling(v, h_prev)

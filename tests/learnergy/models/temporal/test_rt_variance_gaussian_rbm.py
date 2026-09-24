@@ -1,4 +1,5 @@
 import torch
+
 from learnergy.models.temporal import rt_variance_gaussian_rbm
 
 
@@ -67,6 +68,7 @@ def test_rt_variance_gaussian_rbm_energy():
 
 def test_rt_variance_gaussian_rbm_energy_uses_sigma():
     from learnergy.models.temporal import rtrbm
+
     model = rt_variance_gaussian_rbm.RTVarianceGaussianRBM()
     plain = rtrbm.RTRBM()
     samples = torch.ones(1, 128)
@@ -86,8 +88,7 @@ def test_rt_variance_gaussian_rbm_sigma_receives_gradient():
         v_t = x[:, t, :]
         _, _, _, _, vis_act = model.gibbs_sampling(v_t, h_prev)
         vis_act = vis_act.detach()
-        cost_t = torch.mean(model.energy(v_t, h_prev)) - \
-                 torch.mean(model.energy(vis_act, h_prev))
+        cost_t = torch.mean(model.energy(v_t, h_prev)) - torch.mean(model.energy(vis_act, h_prev))
         total_cost = total_cost + cost_t
         h_prev, _ = model.hidden_sampling(v_t, h_prev)
     total_cost.backward()

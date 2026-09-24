@@ -1,8 +1,11 @@
 """Comprehensive sample() tests against the actual fork's import paths."""
+
+import logging
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-import logging
+
 logging.disable(logging.CRITICAL)
 
 torch.manual_seed(0)
@@ -24,6 +27,7 @@ class _SimpleSeqDataset(Dataset):
 
 def test_rtrbm_shape_and_binary():
     from learnergy.models.temporal.rtrbm import RTRBM
+
     model = RTRBM(n_visible=8, n_hidden=6)
     s = model.sample(n_samples=5, n_steps=12, gibbs_steps=20)
     assert s.shape == (5, 12, 8)
@@ -33,6 +37,7 @@ def test_rtrbm_shape_and_binary():
 
 def test_rtgaussian_shape_and_continuous():
     from learnergy.models.temporal.rt_gaussian_rbm import RTGaussianRBM
+
     model = RTGaussianRBM(n_visible=8, n_hidden=6, normalize=False, input_normalize=False)
     s = model.sample(n_samples=5, n_steps=12, gibbs_steps=20)
     assert s.shape == (5, 12, 8)
@@ -43,6 +48,7 @@ def test_rtgaussian_shape_and_continuous():
 
 def test_rtvariance_shape_and_continuous():
     from learnergy.models.temporal.rt_variance_gaussian_rbm import RTVarianceGaussianRBM
+
     model = RTVarianceGaussianRBM(n_visible=8, n_hidden=6)
     s = model.sample(n_samples=5, n_steps=12, gibbs_steps=20)
     assert s.shape == (5, 12, 8)
@@ -54,6 +60,7 @@ def test_rtvariance_shape_and_continuous():
 def test_rtvariance_respects_learned_sigma():
     """Generated sample variance should track a forced per-feature sigma."""
     from learnergy.models.temporal.rt_variance_gaussian_rbm import RTVarianceGaussianRBM
+
     model = RTVarianceGaussianRBM(n_visible=6, n_hidden=4)
     with torch.no_grad():
         model.sigma.copy_(torch.tensor([0.05, 0.05, 0.05, 3.0, 3.0, 3.0]))
@@ -61,8 +68,10 @@ def test_rtvariance_respects_learned_sigma():
     per_feature_std = s[:, 0, :].std(dim=0)
     low_sigma_std = per_feature_std[:3].mean().item()
     high_sigma_std = per_feature_std[3:].mean().item()
-    print(f"RTVarianceGaussianRBM: per-feature sample std, low-sigma features={low_sigma_std:.3f}, "
-          f"high-sigma features={high_sigma_std:.3f}")
+    print(
+        f"RTVarianceGaussianRBM: per-feature sample std, low-sigma features={low_sigma_std:.3f}, "
+        f"high-sigma features={high_sigma_std:.3f}"
+    )
     assert high_sigma_std > low_sigma_std, (
         "Generated variance does not track learned sigma -- sample() may be using "
         "the deterministic mean instead of the actual noisy draw (the tuple-order risk)."
@@ -73,6 +82,7 @@ def test_rtvariance_respects_learned_sigma():
 def test_rtgaussian_sample_is_not_degenerate_constant():
     """Regression check: repeated sample() calls must not be deterministic."""
     from learnergy.models.temporal.rt_gaussian_rbm import RTGaussianRBM
+
     model = RTGaussianRBM(n_visible=6, n_hidden=4, normalize=False, input_normalize=False)
     s1 = model.sample(n_samples=3, n_steps=8, gibbs_steps=20)
     s2 = model.sample(n_samples=3, n_steps=8, gibbs_steps=20)
@@ -85,6 +95,7 @@ def test_rtgaussian_sample_is_not_degenerate_constant():
 def test_gibbs_steps_actually_matters():
     """gibbs_steps should measurably change the sampled distribution."""
     from learnergy.models.temporal.rtrbm import RTRBM
+
     torch.manual_seed(1)
     model = RTRBM(n_visible=10, n_hidden=8)
     with torch.no_grad():
@@ -105,6 +116,7 @@ def test_gibbs_steps_actually_matters():
 
 def test_rtdbn_sample_delegates():
     from learnergy.models.temporal.rtdbn import RTDBN
+
     model = RTDBN(model=("variance_gaussian",), n_visible=6, n_hidden=(4,))
     s = model.sample(n_samples=3, n_steps=5, gibbs_steps=10)
     assert s.shape == (3, 5, 6)
@@ -114,6 +126,7 @@ def test_rtdbn_sample_delegates():
 def test_rtdbn_multilayer_sample_works():
     """RTDBN.sample() generates via top-layer Gibbs + top-down ancestral pass for n_layers > 1."""
     from learnergy.models.temporal.rtdbn import RTDBN
+
     model = RTDBN(
         model=("variance_gaussian", "variance_gaussian"),
         n_visible=6,
@@ -159,10 +172,14 @@ def test_trained_model_samples_resemble_training_structure():
     even_second_half = samples[:, 0::2, 3:].mean().item()
     odd_first_half = samples[:, 1::2, :3].mean().item()
     odd_second_half = samples[:, 1::2, 3:].mean().item()
-    print(f"Trained RTRBM sample() stats: even-t first-half ON rate={even_first_half:.2f} "
-          f"(expect high), even-t second-half ON rate={even_second_half:.2f} (expect low)")
-    print(f"                              odd-t first-half ON rate={odd_first_half:.2f} (expect low), "
-          f"odd-t second-half ON rate={odd_second_half:.2f} (expect high)")
+    print(
+        f"Trained RTRBM sample() stats: even-t first-half ON rate={even_first_half:.2f} "
+        f"(expect high), even-t second-half ON rate={even_second_half:.2f} (expect low)"
+    )
+    print(
+        f"                              odd-t first-half ON rate={odd_first_half:.2f} (expect low), "
+        f"odd-t second-half ON rate={odd_second_half:.2f} (expect high)"
+    )
     assert even_first_half > even_second_half, "sample() did not learn the even-timestep pattern"
     assert odd_second_half > odd_first_half, "sample() did not learn the odd-timestep pattern"
     print("RTRBM: trained-model sample() reproduces learned temporal structure: PASS")
@@ -171,6 +188,7 @@ def test_trained_model_samples_resemble_training_structure():
 def test_gaussian_gibbs_sampling_bugfix_visible_states_not_probs():
     """Regression test: gibbs_sampling() must return raw states, not sigmoid(probs)."""
     from learnergy.models.temporal.rt_gaussian_rbm import RTGaussianRBM
+
     torch.manual_seed(4)
     model = RTGaussianRBM(n_visible=6, n_hidden=4, normalize=False, input_normalize=False)
     with torch.no_grad():

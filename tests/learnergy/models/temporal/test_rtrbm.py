@@ -1,4 +1,5 @@
 import torch
+
 from learnergy.models.temporal import rtrbm
 
 
@@ -11,12 +12,12 @@ def test_rtrbm_n_visible_setter():
     new_rtrbm = rtrbm.RTRBM()
     try:
         new_rtrbm.n_visible = "a"
-    except:
+    except Exception:
         new_rtrbm.n_visible = 1
     assert new_rtrbm.n_visible == 1
     try:
         new_rtrbm.n_visible = 0
-    except:
+    except Exception:
         new_rtrbm.n_visible = 1
     assert new_rtrbm.n_visible == 1
 
@@ -30,12 +31,12 @@ def test_rtrbm_n_hidden_setter():
     new_rtrbm = rtrbm.RTRBM()
     try:
         new_rtrbm.n_hidden = "a"
-    except:
+    except Exception:
         new_rtrbm.n_hidden = 1
     assert new_rtrbm.n_hidden == 1
     try:
         new_rtrbm.n_hidden = 0
-    except:
+    except Exception:
         new_rtrbm.n_hidden = 1
     assert new_rtrbm.n_hidden == 1
 
@@ -49,12 +50,12 @@ def test_rtrbm_steps_setter():
     new_rtrbm = rtrbm.RTRBM()
     try:
         new_rtrbm.steps = "a"
-    except:
+    except Exception:
         new_rtrbm.steps = 1
     assert new_rtrbm.steps == 1
     try:
         new_rtrbm.steps = 0
-    except:
+    except Exception:
         new_rtrbm.steps = 1
     assert new_rtrbm.steps == 1
 
@@ -68,12 +69,12 @@ def test_rtrbm_lr_setter():
     new_rtrbm = rtrbm.RTRBM()
     try:
         new_rtrbm.lr = "a"
-    except:
+    except Exception:
         new_rtrbm.lr = 0.1
     assert new_rtrbm.lr == 0.1
     try:
         new_rtrbm.lr = -1
-    except:
+    except Exception:
         new_rtrbm.lr = 0.1
     assert new_rtrbm.lr == 0.1
 
@@ -134,8 +135,7 @@ def test_rtrbm_gibbs_sampling():
     new_rtrbm = rtrbm.RTRBM()
     v = torch.ones(1, 128)
     h_prev = torch.zeros(1, 128)
-    pos_h_probs, pos_h_states, neg_h_probs, neg_h_states, vis = \
-        new_rtrbm.gibbs_sampling(v, h_prev)
+    pos_h_probs, pos_h_states, neg_h_probs, neg_h_states, vis = new_rtrbm.gibbs_sampling(v, h_prev)
     assert pos_h_probs.size(1) == 128
     assert vis.size(1) == 128
 

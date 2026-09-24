@@ -1,4 +1,5 @@
 """Recurrent Temporal RBM with learned per-feature variance (sigma)."""
+
 from typing import Tuple
 
 import torch
@@ -6,8 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import learnergy.utils.constants as c
-from learnergy.utils import logging
 from learnergy.models.temporal.rtrbm import RTRBM
+from learnergy.utils import logging
 
 logger = logging.get_logger(__name__)
 
@@ -73,9 +74,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         return probs, states
 
-    def visible_sampling(
-        self, h: torch.Tensor, scale: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def visible_sampling(self, h: torch.Tensor, scale: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         activations = F.linear(h, self.W, self.a)
 
         if self.device == "cpu":
@@ -87,9 +86,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         return states, activations
 
-    def energy(
-        self, samples: torch.Tensor, h_prev: torch.Tensor
-    ) -> torch.Tensor:
+    def energy(self, samples: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
         sigma_sq = torch.pow(self.sigma, 2) + c.EPSILON
         v_scaled = torch.div(samples, sigma_sq)
 
@@ -99,9 +96,7 @@ class RTVarianceGaussianRBM(RTRBM):
         s = nn.Softplus()
         h = torch.sum(s(activations), dim=1)
 
-        v = torch.sum(
-            torch.div(torch.pow(samples - self.a, 2), 2 * sigma_sq), dim=1
-        )
+        v = torch.sum(torch.div(torch.pow(samples - self.a, 2), 2 * sigma_sq), dim=1)
 
         energy = -v - h
 
@@ -115,12 +110,8 @@ class RTVarianceGaussianRBM(RTRBM):
         neg_hidden_states = pos_hidden_states
 
         for _ in range(self.steps):
-            visible_states, visible_activations = self.visible_sampling(
-                neg_hidden_states, True
-            )
-            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
-                visible_activations, h_prev, True
-            )
+            visible_states, visible_activations = self.visible_sampling(neg_hidden_states, True)
+            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(visible_activations, h_prev, True)
 
         return (
             pos_hidden_probs,
@@ -145,14 +136,10 @@ class RTVarianceGaussianRBM(RTRBM):
             _, _, _, _, visible_activations = self.gibbs_sampling(v_t, h_prev)
             visible_activations = visible_activations.detach()
 
-            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(
-                self.energy(visible_activations, h_prev)
-            )
+            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(self.energy(visible_activations, h_prev))
             total_cost = total_cost + cost_t
 
-            batch_mse = torch.div(
-                torch.sum(torch.pow(v_t - visible_activations, 2)), batch_size
-            ).detach()
+            batch_mse = torch.div(torch.sum(torch.pow(v_t - visible_activations, 2)), batch_size).detach()
             total_mse = total_mse + batch_mse
 
             h_prev, _ = self.hidden_sampling(v_t, h_prev)
@@ -171,9 +158,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         return total_mse
 
-    def reconstruct(
-        self, dataset: torch.utils.data.Dataset
-    ) -> Tuple[float, torch.Tensor]:
+    def reconstruct(self, dataset: torch.utils.data.Dataset) -> Tuple[float, torch.Tensor]:
         from torch.utils.data import DataLoader
         from tqdm import tqdm
 
@@ -181,9 +166,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         mse = torch.tensor(0.0, device=self.device)
         batch_size = len(dataset)
-        batches = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=0
-        )
+        batches = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         visible_probs_all = []
 
         for samples, _ in tqdm(batches):
@@ -198,20 +181,14 @@ class RTVarianceGaussianRBM(RTRBM):
 
             for t in range(seq_len):
                 v_t = samples[:, t, :]
-                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(
-                    v_t, h_prev
-                )
-                _, visible_activations = self.visible_sampling(
-                    pos_hidden_states)
+                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v_t, h_prev)
+                _, visible_activations = self.visible_sampling(pos_hidden_states)
                 recon_activations.append(visible_activations.unsqueeze(1))
                 h_prev = pos_hidden_probs
 
             recon_seq = torch.cat(recon_activations, dim=1)
 
-            batch_mse = torch.div(
-                torch.sum(torch.pow(samples - recon_seq, 2)),
-                batch_size_actual
-            ).detach()
+            batch_mse = torch.div(torch.sum(torch.pow(samples - recon_seq, 2)), batch_size_actual).detach()
             mse += batch_mse
             visible_probs_all.append(recon_seq)
 
@@ -233,9 +210,7 @@ class RTVarianceGaussianRBM(RTRBM):
 
         return torch.cat(all_probs, dim=1)
 
-    def sample(
-        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
-    ) -> torch.Tensor:
+    def sample(self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100) -> torch.Tensor:
         """Generates sequences using the noisy visible draw (this class's tuple order is state-first)."""
         with torch.no_grad():
             h_prev = self.h0.unsqueeze(0).expand(n_samples, -1)
@@ -243,11 +218,7 @@ class RTVarianceGaussianRBM(RTRBM):
             all_visible = []
 
             for t in range(n_steps):
-                h = torch.bernoulli(
-                    torch.full(
-                        (n_samples, self.n_hidden), 0.5, device=h_prev.device
-                    )
-                )
+                h = torch.bernoulli(torch.full((n_samples, self.n_hidden), 0.5, device=h_prev.device))
                 for _ in range(gibbs_steps):
                     v, _ = self.visible_sampling(h)
                     _, h = self.hidden_sampling(v, h_prev)

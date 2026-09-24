@@ -1,4 +1,5 @@
 import torch
+
 from learnergy.models.temporal import rtdbn
 
 
@@ -11,7 +12,7 @@ def test_rtdbn_n_visible_setter():
     model = rtdbn.RTDBN()
     try:
         model.n_visible = 0
-    except:
+    except Exception:
         model.n_visible = 78
     assert model.n_visible == 78
 
@@ -30,7 +31,7 @@ def test_rtdbn_n_layers_setter():
     model = rtdbn.RTDBN()
     try:
         model.n_layers = 0
-    except:
+    except Exception:
         model.n_layers = 1
     assert model.n_layers == 1
 
@@ -41,8 +42,8 @@ def test_rtdbn_models_length():
 
 
 def test_rtdbn_models_type():
-    from learnergy.models.temporal.rt_variance_gaussian_rbm import \
-        RTVarianceGaussianRBM
+    from learnergy.models.temporal.rt_variance_gaussian_rbm import RTVarianceGaussianRBM
+
     model = rtdbn.RTDBN()
     assert isinstance(model.models[0], RTVarianceGaussianRBM)
 
@@ -91,7 +92,7 @@ def test_rtdbn_multilayer():
 
 def test_rtdbn_invalid_model_type():
     try:
-        model = rtdbn.RTDBN(model=("invalid_type",))
+        rtdbn.RTDBN(model=("invalid_type",))
         assert False, "Should have raised an error"
-    except:
+    except Exception:
         pass

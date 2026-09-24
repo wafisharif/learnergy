@@ -1,17 +1,15 @@
 """Recurrent Temporal Deep Belief Network: stacked RTRBM layers with mean-pooled temporal embeddings."""
-from typing import List, Optional, Tuple
+
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 import learnergy.utils.exception as e
 from learnergy.core import Dataset, Model
-from learnergy.utils import logging
-
 from learnergy.models.temporal.rt_variance_gaussian_rbm import RTVarianceGaussianRBM
+from learnergy.utils import logging
 
 logger = logging.get_logger(__name__)
 
@@ -57,10 +55,7 @@ class RTDBN(Model):
             n_input = self.n_visible if i == 0 else self.n_hidden[i - 1]
 
             if model[i] not in RT_MODELS:
-                raise e.ValueError(
-                    f"Model '{model[i]}' not supported. "
-                    f"Choose from: {list(RT_MODELS.keys())}"
-                )
+                raise e.ValueError(f"Model '{model[i]}' not supported. " f"Choose from: {list(RT_MODELS.keys())}")
 
             m = RT_MODELS[model[i]](
                 n_visible=n_input,
@@ -108,9 +103,7 @@ class RTDBN(Model):
             raise e.ValueError("`n_layers` should be > 0")
         self._n_layers = n_layers
 
-    def sample(
-        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
-    ) -> torch.Tensor:
+    def sample(self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100) -> torch.Tensor:
         """Generates sequences via Gibbs sampling at the top layer, then a
         single top-down ancestral pass through the frozen lower layers
         (standard DBN generation, per-timestep since visible_sampling
@@ -118,18 +111,14 @@ class RTDBN(Model):
         delegation when n_layers == 1.
         """
         with torch.no_grad():
-            current = self.models[-1].sample(
-                n_samples=n_samples, n_steps=n_steps, gibbs_steps=gibbs_steps
-            )
+            current = self.models[-1].sample(n_samples=n_samples, n_steps=n_steps, gibbs_steps=gibbs_steps)
 
             for i in range(self.n_layers - 2, -1, -1):
                 current = self._decode_sequence(self.models[i], current)
 
         return current
 
-    def _decode_sequence(
-        self, model: torch.nn.Module, hidden_seq: torch.Tensor
-    ) -> torch.Tensor:
+    def _decode_sequence(self, model: torch.nn.Module, hidden_seq: torch.Tensor) -> torch.Tensor:
         """Single ancestral pass: applies a frozen layer's visible_sampling
         per timestep to map its hidden-space sequence down to its visible space.
         """
@@ -164,9 +153,7 @@ class RTDBN(Model):
         the next layer's training data.
         """
         if len(epochs) != self.n_layers:
-            raise e.SizeError(
-                f"`epochs` should have size equal to {self.n_layers}"
-            )
+            raise e.SizeError(f"`epochs` should have size equal to {self.n_layers}")
 
         mse_per_layer = []
         current_dataset = dataset
@@ -200,9 +187,7 @@ class RTDBN(Model):
 
         return mse_per_layer
 
-    def _encode_dataset(
-        self, dataset: torch.utils.data.Dataset, model: torch.nn.Module, batch_size: int
-    ) -> Dataset:
+    def _encode_dataset(self, dataset: torch.utils.data.Dataset, model: torch.nn.Module, batch_size: int) -> Dataset:
         """Encodes a dataset once through a frozen layer to build the next
         layer's training data; torch.no_grad() avoids an autograd graph
         through the frozen params.

@@ -1,12 +1,13 @@
 """Gaussian-Bernoulli Recurrent Temporal RBM (continuous visible units)."""
+
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from learnergy.utils import logging
 from learnergy.models.temporal.rtrbm import RTRBM
+from learnergy.utils import logging
 
 logger = logging.get_logger(__name__)
 
@@ -76,21 +77,15 @@ class RTGaussianRBM(RTRBM):
 
         return energy
 
-    def gibbs_sampling(
-        self, v: torch.Tensor, h_prev: torch.Tensor
-    ):
+    def gibbs_sampling(self, v: torch.Tensor, h_prev: torch.Tensor):
         """One Gibbs step; uses raw visible_states (not sigmoid) as the CD negative particle."""
         pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
         neg_hidden_states = pos_hidden_states
 
         for _ in range(self.steps):
-            visible_probs, visible_states = self.visible_sampling(
-                neg_hidden_states, True
-            )
+            visible_probs, visible_states = self.visible_sampling(neg_hidden_states, True)
 
-            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
-                visible_states, h_prev, True
-            )
+            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(visible_states, h_prev, True)
 
         return (
             pos_hidden_probs,
@@ -100,9 +95,7 @@ class RTGaussianRBM(RTRBM):
             visible_states,
         )
 
-    def hidden_sampling(
-        self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False
-    ):
+    def hidden_sampling(self, v: torch.Tensor, h_prev: torch.Tensor, scale: bool = False):
         h_prev = torch.nan_to_num(h_prev, nan=0.0)
         h_prev = torch.clamp(h_prev, 0.0, 1.0)
 
@@ -124,10 +117,7 @@ class RTGaussianRBM(RTRBM):
         if self.normalize:
             batch_size, seq_len, n_visible = sequence.shape
             flat = sequence.reshape(-1, n_visible)
-            flat = (
-                (flat - torch.mean(flat, 0, True))
-                / (torch.std(flat, 0, True) + 1e-6)
-            ).detach()
+            flat = ((flat - torch.mean(flat, 0, True)) / (torch.std(flat, 0, True) + 1e-6)).detach()
             sequence = flat.reshape(batch_size, seq_len, n_visible)
 
         batch_size, seq_len, n_visible = sequence.shape
@@ -142,14 +132,10 @@ class RTGaussianRBM(RTRBM):
             _, _, _, _, visible_states = self.gibbs_sampling(v_t, h_prev)
             visible_states = visible_states.detach()
 
-            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(
-                self.energy(visible_states, h_prev)
-            )
+            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(self.energy(visible_states, h_prev))
             total_cost = total_cost + cost_t
 
-            batch_mse = torch.div(
-                torch.sum(torch.pow(v_t - visible_states, 2)), batch_size
-            ).detach()
+            batch_mse = torch.div(torch.sum(torch.pow(v_t - visible_states, 2)), batch_size).detach()
             total_mse = total_mse + batch_mse
 
             h_prev, _ = self.hidden_sampling(v_t, h_prev)
@@ -164,9 +150,7 @@ class RTGaussianRBM(RTRBM):
 
         return total_mse
 
-    def visible_sampling(
-        self, h: torch.Tensor, scale: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def visible_sampling(self, h: torch.Tensor, scale: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """Visible layer sampling for Gaussian units, P(v|h)."""
         activations = F.linear(h, self.W, self.a)
 
@@ -184,10 +168,7 @@ class RTGaussianRBM(RTRBM):
         if self.input_normalize:
             batch_size, seq_len, n_visible = x.shape
             flat = x.reshape(-1, n_visible)
-            flat = (
-                (flat - torch.mean(flat, 0, True))
-                / (torch.std(flat, 0, True) + 1e-6)
-            ).detach()
+            flat = ((flat - torch.mean(flat, 0, True)) / (torch.std(flat, 0, True) + 1e-6)).detach()
             x = flat.reshape(batch_size, seq_len, n_visible)
 
         batch_size, seq_len, n_visible = x.shape
@@ -200,9 +181,7 @@ class RTGaussianRBM(RTRBM):
             h_prev = probs
         return torch.cat(all_probs, dim=1)
 
-    def reconstruct(
-        self, dataset: torch.utils.data.Dataset
-    ) -> Tuple[float, torch.Tensor]:
+    def reconstruct(self, dataset: torch.utils.data.Dataset) -> Tuple[float, torch.Tensor]:
         """Reconstructs a dataset, normalizing per batch first.
 
         Returns the raw linear activation (recon_states_seq), not the
@@ -217,9 +196,7 @@ class RTGaussianRBM(RTRBM):
 
         mse = torch.tensor(0.0, device=self.device)
         batch_size = len(dataset)
-        batches = DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=0
-        )
+        batches = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         visible_states_all = []
 
         for samples, _ in tqdm(batches):
@@ -229,37 +206,24 @@ class RTGaussianRBM(RTRBM):
             if self.normalize:
                 b, s, n = samples.shape
                 flat = samples.reshape(-1, n)
-                flat = (
-                    (flat - torch.mean(flat, 0, True))
-                    / (torch.std(flat, 0, True) + 1e-6)
-                ).detach()
+                flat = ((flat - torch.mean(flat, 0, True)) / (torch.std(flat, 0, True) + 1e-6)).detach()
                 samples = flat.reshape(b, s, n)
 
             batch_size_actual = samples.size(0)
             seq_len = samples.size(1)
             h_prev = self.h0.unsqueeze(0).expand(batch_size_actual, -1)
-            recon_probs = []
             recon_states = []
 
             for t in range(seq_len):
                 v_t = samples[:, t, :]
-                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(
-                    v_t, h_prev
-                )
-                visible_prob, visible_state = self.visible_sampling(
-                    pos_hidden_states
-                )
-                recon_probs.append(visible_prob.unsqueeze(1))
+                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v_t, h_prev)
+                _, visible_state = self.visible_sampling(pos_hidden_states)
                 recon_states.append(visible_state.unsqueeze(1))
                 h_prev = pos_hidden_probs
 
-            recon_probs_seq = torch.cat(recon_probs, dim=1)
             recon_states_seq = torch.cat(recon_states, dim=1)
 
-            batch_mse = torch.div(
-                torch.sum(torch.pow(samples - recon_states_seq, 2)),
-                batch_size_actual
-            ).detach()
+            batch_mse = torch.div(torch.sum(torch.pow(samples - recon_states_seq, 2)), batch_size_actual).detach()
             mse += batch_mse
             visible_states_all.append(recon_states_seq)
 
@@ -267,9 +231,7 @@ class RTGaussianRBM(RTRBM):
         logger.info("MSE: %f", mse)
         return mse, torch.cat(visible_states_all, dim=0)
 
-    def sample(
-        self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100
-    ) -> torch.Tensor:
+    def sample(self, n_samples: int = 1, n_steps: int = 10, gibbs_steps: int = 100) -> torch.Tensor:
         """Generates sequences; adds Gaussian noise to the mean since visible_sampling() doesn't."""
         with torch.no_grad():
             h_prev = self.h0.unsqueeze(0).expand(n_samples, -1)
@@ -277,11 +239,7 @@ class RTGaussianRBM(RTRBM):
             all_visible = []
 
             for t in range(n_steps):
-                h = torch.bernoulli(
-                    torch.full(
-                        (n_samples, self.n_hidden), 0.5, device=h_prev.device
-                    )
-                )
+                h = torch.bernoulli(torch.full((n_samples, self.n_hidden), 0.5, device=h_prev.device))
                 for _ in range(gibbs_steps):
                     _, mean = self.visible_sampling(h)
                     v = mean + torch.randn_like(mean)

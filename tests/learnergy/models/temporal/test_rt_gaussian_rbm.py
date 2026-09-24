@@ -1,4 +1,5 @@
 import torch
+
 from learnergy.models.temporal import rt_gaussian_rbm
 
 
@@ -49,8 +50,7 @@ def test_rt_gaussian_rbm_gibbs_sampling():
     model = rt_gaussian_rbm.RTGaussianRBM()
     v = torch.ones(1, 128)
     h_prev = torch.zeros(1, 128)
-    pos_h_probs, pos_h_states, neg_h_probs, neg_h_states, vis = \
-        model.gibbs_sampling(v, h_prev)
+    pos_h_probs, pos_h_states, neg_h_probs, neg_h_states, vis = model.gibbs_sampling(v, h_prev)
     assert pos_h_probs.size(1) == 128
     assert vis.size(1) == 128
 
